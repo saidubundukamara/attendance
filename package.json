@@ -2,6 +2,13 @@
   "name": "attendance",
   "version": "0.1.0",
   "private": true,
+  "author": "Saidu Bundu-Kamara",
+  "license": "MIT",
+  "homepage": "https://github.com/saidubundukamara/attendance",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/saidubundukamara/attendance.git"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
