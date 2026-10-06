@@ -17,15 +17,17 @@ export default async function ClassPage({
 }) {
   await requireLecturer();
   const { classId } = await params;
-  const cls = /^\d+$/.test(classId) ? getClass(Number(classId)) : null;
-  const history = cls ? getClassHistory(db, cls.id) : null;
+  const cls = /^\d+$/.test(classId) ? await getClass(Number(classId)) : null;
+  const history = cls ? await getClassHistory(db, cls.id) : null;
   if (!cls || !history) notFound();
 
   return (
     <div className="stagger">
       <div>
         <BackLink />
-        <h1 className="mt-4 text-4xl font-semibold tracking-tight">{cls.code}</h1>
+        <h1 className="mt-4 text-4xl font-semibold tracking-tight">
+          {cls.code}
+        </h1>
         <p className="mt-1 text-lg text-muted">
           {[cls.moduleName, cls.moduleCode].filter(Boolean).join(" · ")}
         </p>

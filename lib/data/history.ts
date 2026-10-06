@@ -49,18 +49,25 @@ export function percentOf(present: number, absent: number): number | null {
   return total === 0 ? null : Math.round((present / total) * 100);
 }
 
-export function getClassHistory(db: Db, classId: number): ClassHistory | null {
-  const cls = db.select().from(classes).where(eq(classes.id, classId)).get();
+export async function getClassHistory(
+  db: Db,
+  classId: number,
+): Promise<ClassHistory | null> {
+  const cls = await db
+    .select()
+    .from(classes)
+    .where(eq(classes.id, classId))
+    .get();
   if (!cls) return null;
 
-  const classSessions = db
+  const classSessions = await db
     .select()
     .from(sessions)
     .where(eq(sessions.classId, classId))
     .all();
   const weekBySession = new Map(classSessions.map((s) => [s.id, s.week]));
   const records = classSessions.length
-    ? db
+    ? await db
         .select({
           sessionId: attendance.sessionId,
           studentId: attendance.studentId,
@@ -80,7 +87,7 @@ export function getClassHistory(db: Db, classId: number): ClassHistory | null {
     cellsByStudent.set(record.studentId, cells);
   }
 
-  const roster = db
+  const roster = await db
     .select({
       id: students.id,
       studentId: students.studentId,
@@ -100,7 +107,13 @@ export function getClassHistory(db: Db, classId: number): ClassHistory | null {
       const statuses = Object.values(cells);
       const present = statuses.filter((s) => s === "PRESENT").length;
       const absent = statuses.length - present;
-      return { ...student, cells, present, absent, percent: percentOf(present, absent) };
+      return {
+        ...student,
+        cells,
+        present,
+        absent,
+        percent: percentOf(present, absent),
+      };
     });
 
   const weeks: HistoryWeek[] = Array.from(
@@ -157,11 +170,11 @@ export type StudentSummary = {
 };
 
 // `studentId` is the ID printed in the sheet.
-export function getStudentSummary(
+export async function getStudentSummary(
   db: Db,
   studentId: string,
-): StudentSummary | null {
-  const student = db
+): Promise<StudentSummary | null> {
+  const student = await db
     .select()
     .from(students)
     .where(eq(students.studentId, studentId))
@@ -169,15 +182,16 @@ export function getStudentSummary(
   if (!student) return null;
 
   const records = new Map(
-    db
-      .select({ sessionId: attendance.sessionId, status: attendance.status })
-      .from(attendance)
-      .where(eq(attendance.studentId, student.id))
-      .all()
-      .map((record) => [record.sessionId, record.status]),
+    (
+      await db
+        .select({ sessionId: attendance.sessionId, status: attendance.status })
+        .from(attendance)
+        .where(eq(attendance.studentId, student.id))
+        .all()
+    ).map((record) => [record.sessionId, record.status]),
   );
 
-  const enrolled = db
+  const enrolled = await db
     .select({
       classId: classes.id,
       code: classes.code,
@@ -194,20 +208,29 @@ export function getStudentSummary(
     id: student.id,
     studentId: student.studentId,
     name: student.name,
-    classes: enrolled.map((cls) => {
-      const weeks = db
-        .select({ id: sessions.id, week: sessions.week })
-        .from(sessions)
-        .where(eq(sessions.classId, cls.classId))
-        .orderBy(asc(sessions.week))
-        .all()
-        .map((session) => ({
+    classes: await Promise.all(
+      enrolled.map(async (cls) => {
+        const weeks = (
+          await db
+            .select({ id: sessions.id, week: sessions.week })
+            .from(sessions)
+            .where(eq(sessions.classId, cls.classId))
+            .orderBy(asc(sessions.week))
+            .all()
+        ).map((session) => ({
           week: session.week,
           status: records.get(session.id) ?? null,
         }));
-      const present = weeks.filter((w) => w.status === "PRESENT").length;
-      const absent = weeks.filter((w) => w.status === "ABSENT").length;
-      return { ...cls, present, absent, percent: percentOf(present, absent), weeks };
-    }),
+        const present = weeks.filter((w) => w.status === "PRESENT").length;
+        const absent = weeks.filter((w) => w.status === "ABSENT").length;
+        return {
+          ...cls,
+          present,
+          absent,
+          percent: percentOf(present, absent),
+          weeks,
+        };
+      }),
+    ),
   };
 }

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import { classes, enrollments, students } from "@/lib/db/schema";
 import { classCodeFromTab, type ParsedTab } from "./parse";
@@ -22,15 +22,15 @@ export type RosterSyncReport = {
 
 // Writes parsed tabs into the database. The sheet is the roster: students in
 // a tab become active enrollments, students missing from it become inactive.
-export function applyRoster(
+export async function applyRoster(
   db: Db,
   tabs: { title: string; parsed: ParsedTab }[],
   now: number = Date.now(),
-): RosterSyncReport {
+): Promise<RosterSyncReport> {
   const reports: ClassSyncReport[] = [];
   const seenCodes = new Set<string>();
 
-  db.transaction((tx) => {
+  await db.transaction(async (tx) => {
     for (const { title, parsed } of tabs) {
       const code = classCodeFromTab(title);
       const report: ClassSyncReport = {
@@ -57,7 +57,7 @@ export function applyRoster(
       }
       seenCodes.add(code.toLowerCase());
 
-      const classRow = tx
+      const classRow = await tx
         .insert(classes)
         .values({
           code,
@@ -81,62 +81,76 @@ export function applyRoster(
         .get();
 
       const existing = new Map(
-        tx
-          .select({
-            id: enrollments.id,
-            studentId: enrollments.studentId,
-            active: enrollments.active,
-          })
-          .from(enrollments)
-          .where(eq(enrollments.classId, classRow.id))
-          .all()
-          .map((row) => [row.studentId, row]),
+        (
+          await tx
+            .select({
+              id: enrollments.id,
+              studentId: enrollments.studentId,
+              active: enrollments.active,
+            })
+            .from(enrollments)
+            .where(eq(enrollments.classId, classRow.id))
+            .all()
+        ).map((row) => [row.studentId, row]),
       );
+      // Whole lists go in one statement each: the database is a network call
+      // away, so a row-by-row loop would cost a round trip per student.
       const inSheet = new Set<number>();
-
-      for (const student of parsed.students) {
-        const studentRow = tx
+      const toAdd: number[] = [];
+      const toReactivate: number[] = [];
+      if (parsed.students.length > 0) {
+        const rows = await tx
           .insert(students)
-          .values({ studentId: student.studentId, name: student.name })
+          .values(
+            parsed.students.map((student) => ({
+              studentId: student.studentId,
+              name: student.name,
+            })),
+          )
           .onConflictDoUpdate({
             target: students.studentId,
             // A blank name in the sheet does not erase a known one.
-            set: student.name
-              ? { name: student.name }
-              : { studentId: student.studentId },
+            set: {
+              name: sql`CASE WHEN excluded.name <> '' THEN excluded.name ELSE students.name END`,
+            },
           })
           .returning({ id: students.id })
-          .get();
-        inSheet.add(studentRow.id);
-
-        const enrollment = existing.get(studentRow.id);
-        if (!enrollment) {
-          tx.insert(enrollments)
-            .values({ classId: classRow.id, studentId: studentRow.id })
-            .run();
-          report.added++;
-        } else if (!enrollment.active) {
-          tx.update(enrollments)
-            .set({ active: true })
-            .where(eq(enrollments.id, enrollment.id))
-            .run();
-          report.added++;
+          .all();
+        for (const { id } of rows) {
+          inSheet.add(id);
+          const enrollment = existing.get(id);
+          if (!enrollment) toAdd.push(id);
+          else if (!enrollment.active) toReactivate.push(enrollment.id);
         }
       }
-
-      for (const enrollment of existing.values()) {
-        if (!enrollment.active || inSheet.has(enrollment.studentId)) continue;
-        tx.update(enrollments)
-          .set({ active: false })
-          .where(
-            and(
-              eq(enrollments.id, enrollment.id),
-              eq(enrollments.classId, classRow.id),
-            ),
+      if (toAdd.length > 0) {
+        await tx
+          .insert(enrollments)
+          .values(
+            toAdd.map((studentId) => ({ classId: classRow.id, studentId })),
           )
           .run();
-        report.deactivated++;
       }
+      if (toReactivate.length > 0) {
+        await tx
+          .update(enrollments)
+          .set({ active: true })
+          .where(inArray(enrollments.id, toReactivate))
+          .run();
+      }
+      report.added += toAdd.length + toReactivate.length;
+
+      const gone = [...existing.values()]
+        .filter((e) => e.active && !inSheet.has(e.studentId))
+        .map((e) => e.id);
+      if (gone.length > 0) {
+        await tx
+          .update(enrollments)
+          .set({ active: false })
+          .where(inArray(enrollments.id, gone))
+          .run();
+      }
+      report.deactivated += gone.length;
     }
   });
 

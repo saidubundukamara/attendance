@@ -17,9 +17,9 @@ export const metadata = { title: "Classes — Attendance" };
 
 export default async function DashboardPage() {
   await requireLecturer();
-  const classes = getDashboardClasses();
+  const classes = await getDashboardClasses();
   const today = new Date();
-  const sync = getSyncStatus(db);
+  const sync = await getSyncStatus(db);
   if (sync.stalled) after(() => retryStalledSync());
 
   return (
@@ -104,7 +104,10 @@ export default async function DashboardPage() {
                     </p>
                     <Link
                       href={`/sessions/${active.id}`}
-                      className={buttonClass({ variant: "accent", arrow: true })}
+                      className={buttonClass({
+                        variant: "accent",
+                        arrow: true,
+                      })}
                     >
                       View QR
                       <ArrowBadge />

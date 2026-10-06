@@ -19,20 +19,24 @@ export type OpenSessionResult =
 
 // Starts attendance for a class and week. A week that already has a session
 // is reopened rather than duplicated. One active session per class.
-export function openSession(
+export async function openSession(
   db: Db,
   classId: number,
   week: number,
   now: number = Date.now(),
-): OpenSessionResult {
-  return db.transaction((tx): OpenSessionResult => {
-    const cls = tx.select().from(classes).where(eq(classes.id, classId)).get();
+): Promise<OpenSessionResult> {
+  return await db.transaction(async (tx): Promise<OpenSessionResult> => {
+    const cls = await tx
+      .select()
+      .from(classes)
+      .where(eq(classes.id, classId))
+      .get();
     if (!cls) return { ok: false, reason: "CLASS_NOT_FOUND" };
     if (!Number.isInteger(week) || week < 1 || week > cls.totalWeeks) {
       return { ok: false, reason: "BAD_WEEK" };
     }
 
-    const active = tx
+    const active = await tx
       .select()
       .from(sessions)
       .where(and(eq(sessions.classId, classId), eq(sessions.status, "ACTIVE")))
@@ -49,13 +53,14 @@ export function openSession(
       };
     }
 
-    const existing = tx
+    const existing = await tx
       .select()
       .from(sessions)
       .where(and(eq(sessions.classId, classId), eq(sessions.week, week)))
       .get();
     if (existing) {
-      tx.update(sessions)
+      await tx
+        .update(sessions)
         .set({ status: "ACTIVE", endedAt: null })
         .where(eq(sessions.id, existing.id))
         .run();
@@ -63,8 +68,15 @@ export function openSession(
     }
 
     const sessionId = randomUUID();
-    tx.insert(sessions)
-      .values({ id: sessionId, classId, week, status: "ACTIVE", startedAt: now })
+    await tx
+      .insert(sessions)
+      .values({
+        id: sessionId,
+        classId,
+        week,
+        status: "ACTIVE",
+        startedAt: now,
+      })
       .run();
     return { ok: true, sessionId, reopened: false };
   });
@@ -73,33 +85,35 @@ export function openSession(
 // Ends a session: no more QR check-ins, and every enrolled student without
 // a record is marked absent (0 in the sheet). Returns false when the session
 // does not exist or is already closed.
-export function closeSession(
+export async function closeSession(
   db: Db,
   sessionId: string,
   now: number = Date.now(),
-): boolean {
-  return db.transaction((tx) => {
-    const session = tx
+): Promise<boolean> {
+  return await db.transaction(async (tx) => {
+    const session = await tx
       .select()
       .from(sessions)
       .where(and(eq(sessions.id, sessionId), eq(sessions.status, "ACTIVE")))
       .get();
     if (!session) return false;
 
-    tx.update(sessions)
+    await tx
+      .update(sessions)
       .set({ status: "CLOSED", endedAt: now })
       .where(eq(sessions.id, sessionId))
       .run();
 
     const recorded = new Set(
-      tx
-        .select({ studentId: attendance.studentId })
-        .from(attendance)
-        .where(eq(attendance.sessionId, sessionId))
-        .all()
-        .map((row) => row.studentId),
+      (
+        await tx
+          .select({ studentId: attendance.studentId })
+          .from(attendance)
+          .where(eq(attendance.sessionId, sessionId))
+          .all()
+      ).map((row) => row.studentId),
     );
-    const roster = tx
+    const roster = await tx
       .select({ id: students.id, studentId: students.studentId })
       .from(enrollments)
       .innerJoin(students, eq(students.id, enrollments.studentId))
@@ -111,24 +125,32 @@ export function closeSession(
       )
       .all();
 
-    for (const student of roster) {
-      if (recorded.has(student.id)) continue;
-      tx.insert(attendance)
-        .values({
-          sessionId,
-          studentId: student.id,
-          status: "ABSENT",
-          source: "MANUAL",
-        })
+    // One statement per table: the database is a network call away, so a
+    // row-by-row loop would cost a round trip per student.
+    const absent = roster.filter((student) => !recorded.has(student.id));
+    if (absent.length > 0) {
+      await tx
+        .insert(attendance)
+        .values(
+          absent.map((student) => ({
+            sessionId,
+            studentId: student.id,
+            status: "ABSENT" as const,
+            source: "MANUAL" as const,
+          })),
+        )
         .run();
-      tx.insert(syncJobs)
-        .values({
-          classId: session.classId,
-          studentId: student.studentId,
-          week: session.week,
-          value: 0,
-          createdAt: now,
-        })
+      await tx
+        .insert(syncJobs)
+        .values(
+          absent.map((student) => ({
+            classId: session.classId,
+            studentId: student.studentId,
+            week: session.week,
+            value: 0,
+            createdAt: now,
+          })),
+        )
         .run();
     }
     return true;
@@ -143,19 +165,23 @@ export type RecordPastWeekResult =
 // app, so the lecturer can fill it in by hand. Nobody is marked absent and
 // nothing is sent to the sheet until a student is marked: the sheet may
 // already hold values typed in for that week.
-export function recordPastWeek(
+export async function recordPastWeek(
   db: Db,
   classId: number,
   week: number,
   now: number = Date.now(),
-): RecordPastWeekResult {
-  return db.transaction((tx): RecordPastWeekResult => {
-    const cls = tx.select().from(classes).where(eq(classes.id, classId)).get();
+): Promise<RecordPastWeekResult> {
+  return await db.transaction(async (tx): Promise<RecordPastWeekResult> => {
+    const cls = await tx
+      .select()
+      .from(classes)
+      .where(eq(classes.id, classId))
+      .get();
     if (!cls) return { ok: false, reason: "CLASS_NOT_FOUND" };
     if (!Number.isInteger(week) || week < 1 || week > cls.totalWeeks) {
       return { ok: false, reason: "BAD_WEEK" };
     }
-    const existing = tx
+    const existing = await tx
       .select({ id: sessions.id })
       .from(sessions)
       .where(and(eq(sessions.classId, classId), eq(sessions.week, week)))
@@ -163,7 +189,8 @@ export function recordPastWeek(
     if (existing) return { ok: true, sessionId: existing.id, created: false };
 
     const sessionId = randomUUID();
-    tx.insert(sessions)
+    await tx
+      .insert(sessions)
       .values({
         id: sessionId,
         classId,

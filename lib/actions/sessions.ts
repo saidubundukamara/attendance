@@ -10,8 +10,7 @@ import { closeSession, openSession, recordPastWeek } from "@/lib/sessions";
 import { scheduleSheetSync, syncRoster } from "@/lib/sheets/sync";
 
 export type StartState =
-  | { error: string; activeSessionId?: string }
-  | undefined;
+  { error: string; activeSessionId?: string } | undefined;
 
 const startSchema = z.object({
   classId: z.coerce.number().int().positive(),
@@ -39,7 +38,7 @@ export async function startSession(
     rosterStale = true;
   }
 
-  const result = openSession(db, classId, week);
+  const result = await openSession(db, classId, week);
   if (!result.ok) {
     switch (result.reason) {
       case "CLASS_NOT_FOUND":
@@ -64,7 +63,7 @@ export async function endSession(formData: FormData): Promise<void> {
   await requireLecturer();
   const sessionId = formData.get("sessionId");
   if (typeof sessionId !== "string" || !sessionId) return;
-  closeSession(db, sessionId);
+  await closeSession(db, sessionId);
   // Flush anything still queued for the sheet.
   after(scheduleSheetSync);
   revalidatePath("/dashboard");
@@ -78,7 +77,11 @@ export async function recordPastWeekAction(
   await requireLecturer();
   const parsed = startSchema.safeParse({ classId, week });
   if (!parsed.success) return { ok: false, error: "Invalid request." };
-  const result = recordPastWeek(db, parsed.data.classId, parsed.data.week);
+  const result = await recordPastWeek(
+    db,
+    parsed.data.classId,
+    parsed.data.week,
+  );
   if (!result.ok) {
     return {
       ok: false,

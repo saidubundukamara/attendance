@@ -9,7 +9,7 @@ import {
 } from "@/lib/db/schema";
 import { getSyncStatus, type SyncStatus } from "@/lib/sheets/write";
 
-export function getSessionStatus(sessionId: string) {
+export async function getSessionStatus(sessionId: string) {
   return db
     .select({ id: sessions.id, status: sessions.status })
     .from(sessions)
@@ -17,8 +17,8 @@ export function getSessionStatus(sessionId: string) {
     .get();
 }
 
-export function getSessionView(sessionId: string) {
-  const row = db
+export async function getSessionView(sessionId: string) {
+  const row = await db
     .select({
       id: sessions.id,
       week: sessions.week,
@@ -36,24 +36,31 @@ export function getSessionView(sessionId: string) {
   if (!row) return null;
 
   const total =
-    db
-      .select({ value: count() })
-      .from(enrollments)
-      .where(
-        and(eq(enrollments.classId, row.classId), eq(enrollments.active, true)),
-      )
-      .get()?.value ?? 0;
+    (
+      await db
+        .select({ value: count() })
+        .from(enrollments)
+        .where(
+          and(
+            eq(enrollments.classId, row.classId),
+            eq(enrollments.active, true),
+          ),
+        )
+        .get()
+    )?.value ?? 0;
   const present =
-    db
-      .select({ value: count() })
-      .from(attendance)
-      .where(
-        and(
-          eq(attendance.sessionId, sessionId),
-          eq(attendance.status, "PRESENT"),
-        ),
-      )
-      .get()?.value ?? 0;
+    (
+      await db
+        .select({ value: count() })
+        .from(attendance)
+        .where(
+          and(
+            eq(attendance.sessionId, sessionId),
+            eq(attendance.status, "PRESENT"),
+          ),
+        )
+        .get()
+    )?.value ?? 0;
 
   return { ...row, total, present };
 }
@@ -78,8 +85,10 @@ export type LiveSession = {
 
 // Everything the session page polls for. Lists the current roster plus
 // anyone with a record who has since left the sheet.
-export function getLiveSession(sessionId: string): LiveSession | null {
-  const session = db
+export async function getLiveSession(
+  sessionId: string,
+): Promise<LiveSession | null> {
+  const session = await db
     .select({ status: sessions.status, classId: sessions.classId })
     .from(sessions)
     .where(eq(sessions.id, sessionId))
@@ -87,14 +96,15 @@ export function getLiveSession(sessionId: string): LiveSession | null {
   if (!session) return null;
 
   const records = new Map(
-    db
-      .select()
-      .from(attendance)
-      .where(eq(attendance.sessionId, sessionId))
-      .all()
-      .map((row) => [row.studentId, row]),
+    (
+      await db
+        .select()
+        .from(attendance)
+        .where(eq(attendance.sessionId, sessionId))
+        .all()
+    ).map((row) => [row.studentId, row]),
   );
-  const roster = db
+  const roster = await db
     .select({
       id: students.id,
       studentId: students.studentId,
@@ -134,6 +144,6 @@ export function getLiveSession(sessionId: string): LiveSession | null {
     present: list.filter((student) => student.status === "PRESENT").length,
     total: roster.filter((student) => student.active).length,
     students: list,
-    sync: getSyncStatus(db),
+    sync: await getSyncStatus(db),
   };
 }

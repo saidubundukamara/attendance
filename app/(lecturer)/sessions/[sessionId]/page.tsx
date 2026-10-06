@@ -24,8 +24,10 @@ export default async function SessionPage({
   await requireLecturer();
   const { sessionId } = await params;
   const { roster } = await searchParams;
-  const session = getSessionView(sessionId);
-  const live = getLiveSession(sessionId);
+  const [session, live] = await Promise.all([
+    getSessionView(sessionId),
+    getLiveSession(sessionId),
+  ]);
   if (!session || !live) notFound();
 
   const active = session.status === "ACTIVE";

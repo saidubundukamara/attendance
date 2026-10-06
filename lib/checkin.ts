@@ -48,14 +48,15 @@ const DEVICE_WINDOW_MS = 60 * 60 * 1000;
 const IP_LIMIT = 120;
 const IP_WINDOW_MS = 60 * 1000;
 
-const DEVICE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DEVICE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function isDeviceId(value: string | null | undefined): value is string {
   return typeof value === "string" && DEVICE_ID.test(value);
 }
 
-export function getCheckInSession(db: Db, sessionId: string) {
-  return db
+export async function getCheckInSession(db: Db, sessionId: string) {
+  return await db
     .select({
       id: sessions.id,
       status: sessions.status,
@@ -71,8 +72,12 @@ export function getCheckInSession(db: Db, sessionId: string) {
 }
 
 // The student this phone already checked in for the session, if any.
-export function getDeviceCheckIn(db: Db, sessionId: string, deviceId: string) {
-  return db
+export async function getDeviceCheckIn(
+  db: Db,
+  sessionId: string,
+  deviceId: string,
+) {
+  return await db
     .select({ name: students.name, studentId: students.studentId })
     .from(attendance)
     .innerJoin(students, eq(students.id, attendance.studentId))
@@ -88,7 +93,7 @@ export function getDeviceCheckIn(db: Db, sessionId: string, deviceId: string) {
 
 function isUniqueViolation(error: unknown): string | null {
   const parts: string[] = [];
-  for (let e = error as { message?: string; cause?: unknown } | undefined; e; ) {
+  for (let e = error as { message?: string; cause?: unknown } | undefined; e;) {
     if (e.message) parts.push(e.message);
     e = e.cause as typeof e;
   }
@@ -96,11 +101,11 @@ function isUniqueViolation(error: unknown): string | null {
   return text.includes("UNIQUE constraint failed") ? text : null;
 }
 
-export function checkIn(
+export async function checkIn(
   db: Db,
   input: CheckInInput,
   now: number = Date.now(),
-): CheckInResult {
+): Promise<CheckInResult> {
   const userAgent = input.userAgent.slice(0, 300);
   // Students type only the last four digits; everything below uses the full ID.
   const enteredId = expandStudentId(
@@ -110,7 +115,7 @@ export function checkIn(
   let nonce: string | null = null;
   let studentName: string | null = null;
 
-  const code = ((): CheckInCode => {
+  const code = await (async (): Promise<CheckInCode> => {
     // 1. Pass: signed by us, not expired, issued to this phone.
     const pass = verifyPass(input.pass, now);
     if (!pass.ok || !isDeviceId(input.deviceId)) return "EXPIRED";
@@ -120,7 +125,7 @@ export function checkIn(
     nonce = pass.payload.nonce;
 
     // 2. Session: class and week come from here, never from the form.
-    const session = getCheckInSession(db, pass.payload.sessionId);
+    const session = await getCheckInSession(db, pass.payload.sessionId);
     if (!session) return "EXPIRED";
     if (session.status !== "ACTIVE") return "CLOSED";
 
@@ -140,7 +145,7 @@ export function checkIn(
     if (!isValidStudentId(enteredId)) return "INVALID_ID";
 
     // 5. Enrolled in this session's class, per the sheet.
-    const student = db
+    const student = await db
       .select({ id: students.id, name: students.name })
       .from(enrollments)
       .innerJoin(students, eq(students.id, enrollments.studentId))
@@ -156,9 +161,9 @@ export function checkIn(
     studentName = student.name;
 
     try {
-      return db.transaction((tx): CheckInCode => {
+      return await db.transaction(async (tx): Promise<CheckInCode> => {
         // 6. Already present?
-        const existing = tx
+        const existing = await tx
           .select({ id: attendance.id, status: attendance.status })
           .from(attendance)
           .where(
@@ -171,7 +176,7 @@ export function checkIn(
         if (existing?.status === "PRESENT") return "ALREADY";
 
         // 7. One student per phone per session.
-        const deviceRow = tx
+        const deviceRow = await tx
           .select({ id: attendance.id })
           .from(attendance)
           .where(
@@ -189,7 +194,7 @@ export function checkIn(
         const lookalike =
           input.ip === "unknown"
             ? undefined
-            : tx
+            : await tx
                 .select({ id: attendance.id })
                 .from(attendance)
                 .where(
@@ -216,15 +221,21 @@ export function checkIn(
         };
         if (existing) {
           // Marked absent earlier (e.g. the session was ended, then reopened).
-          tx.update(attendance).set(row).where(eq(attendance.id, existing.id)).run();
+          await tx
+            .update(attendance)
+            .set(row)
+            .where(eq(attendance.id, existing.id))
+            .run();
         } else {
-          tx.insert(attendance)
+          await tx
+            .insert(attendance)
             .values({ sessionId: session.id, studentId: student.id, ...row })
             .run();
         }
         // Queued in the same transaction so a recorded check-in always has
         // a matching sheet write.
-        tx.insert(syncJobs)
+        await tx
+          .insert(syncJobs)
           .values({
             classId: session.classId,
             studentId: enteredId,
@@ -243,7 +254,8 @@ export function checkIn(
     }
   })();
 
-  db.insert(checkinAttempts)
+  await db
+    .insert(checkinAttempts)
     .values({
       sessionId,
       studentIdEntered: enteredId || null,

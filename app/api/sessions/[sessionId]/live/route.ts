@@ -12,7 +12,7 @@ export async function GET(
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   const { sessionId } = await params;
-  const live = getLiveSession(sessionId);
+  const live = await getLiveSession(sessionId);
   if (!live) {
     return Response.json({ error: "Session not found" }, { status: 404 });
   }

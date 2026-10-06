@@ -58,12 +58,13 @@ export async function updateClassSettings(
   }
 
   const { classId, startDate, totalWeeks } = parsed.data;
-  const result = db
+  const result = await db
     .update(classes)
     .set({ startDate: startDate || null, totalWeeks })
     .where(eq(classes.id, classId))
     .run();
-  if (result.changes === 0) return { ok: false, message: "Class not found." };
+  if (result.rowsAffected === 0)
+    return { ok: false, message: "Class not found." };
 
   revalidatePath("/dashboard");
   revalidatePath(`/classes/${classId}`);
@@ -71,8 +72,7 @@ export async function updateClassSettings(
 }
 
 export type RetryState =
-  | { done: number; pending: number; error: string | null }
-  | undefined;
+  { done: number; pending: number; error: string | null } | undefined;
 
 export async function retrySheetSyncAction(): Promise<RetryState> {
   await requireLecturer();
@@ -81,9 +81,9 @@ export async function retrySheetSyncAction(): Promise<RetryState> {
     done = (await retrySheetSync()).done;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { done, pending: getSyncStatus(db).pending, error: message };
+    return { done, pending: (await getSyncStatus(db)).pending, error: message };
   }
-  const status = getSyncStatus(db);
+  const status = await getSyncStatus(db);
   revalidatePath("/dashboard");
   return { done, pending: status.pending, error: status.lastError };
 }

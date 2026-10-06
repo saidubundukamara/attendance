@@ -15,7 +15,7 @@ export default async function StudentPage({
 }) {
   await requireLecturer();
   const { studentId } = await params;
-  const student = getStudentSummary(db, studentId);
+  const student = await getStudentSummary(db, studentId);
   if (!student) notFound();
 
   return (
@@ -49,7 +49,10 @@ export default async function StudentPage({
                 {cls.code}
               </Link>
               {cls.moduleName && (
-                <span className="font-normal text-muted"> · {cls.moduleName}</span>
+                <span className="font-normal text-muted">
+                  {" "}
+                  · {cls.moduleName}
+                </span>
               )}
             </h2>
             {!cls.active && (
@@ -94,7 +97,10 @@ export default async function StudentPage({
                       Week {week.week}: {markLabel(week.status)}
                     </span>
                   </span>
-                  <span aria-hidden="true" className="text-xs text-muted tabular-nums">
+                  <span
+                    aria-hidden="true"
+                    className="text-xs text-muted tabular-nums"
+                  >
                     W{week.week}
                   </span>
                 </li>

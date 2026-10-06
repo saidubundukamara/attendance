@@ -9,11 +9,7 @@ import {
   getDeviceCheckIn,
   isDeviceId,
 } from "@/lib/checkin";
-import {
-  idErrorMessage,
-  renderForm,
-  renderResult,
-} from "@/lib/checkin-page";
+import { idErrorMessage, renderForm, renderResult } from "@/lib/checkin-page";
 import { db } from "@/lib/db";
 import { getClientIp } from "@/lib/request";
 import { scheduleSheetSync } from "@/lib/sheets/sync";
@@ -39,7 +35,7 @@ export async function GET(request: Request) {
   const qr = verifyQrToken(token);
   if (!qr.ok) return html(renderResult("EXPIRED", null));
 
-  const session = getCheckInSession(db, qr.payload.sessionId);
+  const session = await getCheckInSession(db, qr.payload.sessionId);
   if (!session) return html(renderResult("EXPIRED", null));
   if (session.status !== "ACTIVE") return html(renderResult("CLOSED", session));
 
@@ -56,7 +52,7 @@ export async function GET(request: Request) {
     });
   }
 
-  const already = getDeviceCheckIn(db, session.id, deviceId);
+  const already = await getDeviceCheckIn(db, session.id, deviceId);
   if (already) return html(renderResult("ALREADY", session, already.name));
 
   const pass = signPass({
@@ -81,7 +77,7 @@ export async function POST(request: Request) {
   const pass = field("pass");
   const studentIdRaw = field("studentId");
 
-  const result = checkIn(db, {
+  const result = await checkIn(db, {
     pass,
     studentIdRaw,
     deviceId: (await cookies()).get(DEVICE_COOKIE)?.value ?? null,
@@ -90,7 +86,7 @@ export async function POST(request: Request) {
   });
 
   const session = result.sessionId
-    ? (getCheckInSession(db, result.sessionId) ?? null)
+    ? ((await getCheckInSession(db, result.sessionId)) ?? null)
     : null;
 
   if (result.code === "NOT_FOUND" || result.code === "INVALID_ID") {

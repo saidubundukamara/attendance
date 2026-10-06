@@ -15,9 +15,12 @@ export type AttendanceStatus = "PRESENT" | "ABSENT";
 
 export type SetAttendanceResult =
   | { ok: true; changed: boolean }
-  | { ok: false; reason: "SESSION_NOT_FOUND" | "STUDENT_NOT_FOUND" | "NOT_ENROLLED" };
+  | {
+      ok: false;
+      reason: "SESSION_NOT_FOUND" | "STUDENT_NOT_FOUND" | "NOT_ENROLLED";
+    };
 
-export function setAttendance(
+export async function setAttendance(
   db: Db,
   input: {
     sessionId: string;
@@ -27,9 +30,9 @@ export function setAttendance(
     reason?: string | null;
   },
   now: number = Date.now(),
-): SetAttendanceResult {
-  return db.transaction((tx): SetAttendanceResult => {
-    const session = tx
+): Promise<SetAttendanceResult> {
+  return await db.transaction(async (tx): Promise<SetAttendanceResult> => {
+    const session = await tx
       .select({ id: sessions.id, week: sessions.week, classId: classes.id })
       .from(sessions)
       .innerJoin(classes, eq(classes.id, sessions.classId))
@@ -37,14 +40,14 @@ export function setAttendance(
       .get();
     if (!session) return { ok: false, reason: "SESSION_NOT_FOUND" };
 
-    const student = tx
+    const student = await tx
       .select()
       .from(students)
       .where(eq(students.id, input.studentId))
       .get();
     if (!student) return { ok: false, reason: "STUDENT_NOT_FOUND" };
 
-    const existing = tx
+    const existing = await tx
       .select({ id: attendance.id, status: attendance.status })
       .from(attendance)
       .where(
@@ -56,7 +59,7 @@ export function setAttendance(
       .get();
 
     if (!existing) {
-      const enrolled = tx
+      const enrolled = await tx
         .select({ id: enrollments.id })
         .from(enrollments)
         .where(
@@ -80,14 +83,20 @@ export function setAttendance(
       flagged: false,
     };
     if (existing) {
-      tx.update(attendance).set(row).where(eq(attendance.id, existing.id)).run();
+      await tx
+        .update(attendance)
+        .set(row)
+        .where(eq(attendance.id, existing.id))
+        .run();
     } else {
-      tx.insert(attendance)
+      await tx
+        .insert(attendance)
         .values({ sessionId: session.id, studentId: student.id, ...row })
         .run();
     }
 
-    tx.insert(manualChanges)
+    await tx
+      .insert(manualChanges)
       .values({
         sessionId: session.id,
         studentId: student.id,
@@ -97,7 +106,8 @@ export function setAttendance(
         createdAt: now,
       })
       .run();
-    tx.insert(syncJobs)
+    await tx
+      .insert(syncJobs)
       .values({
         classId: session.classId,
         studentId: student.studentId,

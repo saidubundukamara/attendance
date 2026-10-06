@@ -9,29 +9,33 @@ let db: Db;
 let classA: number;
 let classB: number;
 
-beforeEach(() => {
-  db = createTestDb();
-  [classA, classB] = ["TEST101", "TEST202"].map(
-    (code) =>
-      db
-        .insert(classes)
-        .values({ code, sheetTab: `Attn of ${code}`, totalWeeks: 15 })
-        .returning()
-        .get().id,
+beforeEach(async () => {
+  db = await createTestDb();
+  [classA, classB] = await Promise.all(
+    ["TEST101", "TEST202"].map(
+      async (code) =>
+        (
+          await db
+            .insert(classes)
+            .values({ code, sheetTab: `Attn of ${code}`, totalWeeks: 15 })
+            .returning()
+            .get()
+        ).id,
+    ),
   );
 });
 
-function open(classId: number, week: number, now = 1000) {
-  const result = openSession(db, classId, week, now);
+async function open(classId: number, week: number, now = 1000) {
+  const result = await openSession(db, classId, week, now);
   if (!result.ok) throw new Error(result.reason);
   return result;
 }
 
 describe("openSession", () => {
-  it("creates an active session", () => {
-    const result = open(classA, 5);
+  it("creates an active session", async () => {
+    const result = await open(classA, 5);
     expect(result.reopened).toBe(false);
-    expect(db.select().from(sessions).get()).toMatchObject({
+    expect(await db.select().from(sessions).get()).toMatchObject({
       id: result.sessionId,
       classId: classA,
       week: 5,
@@ -41,16 +45,16 @@ describe("openSession", () => {
     });
   });
 
-  it("returns the same session when the week is already active", () => {
-    const first = open(classA, 5);
-    const again = open(classA, 5);
+  it("returns the same session when the week is already active", async () => {
+    const first = await open(classA, 5);
+    const again = await open(classA, 5);
     expect(again.sessionId).toBe(first.sessionId);
-    expect(db.select().from(sessions).all()).toHaveLength(1);
+    expect(await db.select().from(sessions).all()).toHaveLength(1);
   });
 
-  it("refuses a second active session for the class", () => {
-    const first = open(classA, 5);
-    expect(openSession(db, classA, 6)).toEqual({
+  it("refuses a second active session for the class", async () => {
+    const first = await open(classA, 5);
+    expect(await openSession(db, classA, 6)).toEqual({
       ok: false,
       reason: "ACTIVE_EXISTS",
       sessionId: first.sessionId,
@@ -58,50 +62,60 @@ describe("openSession", () => {
     });
   });
 
-  it("allows two classes to be active at once", () => {
-    open(classA, 5);
-    open(classB, 5);
-    expect(db.select().from(sessions).all()).toHaveLength(2);
+  it("allows two classes to be active at once", async () => {
+    await open(classA, 5);
+    await open(classB, 5);
+    expect(await db.select().from(sessions).all()).toHaveLength(2);
   });
 
-  it("reopens a closed week, keeping its id and start time", () => {
-    const first = open(classA, 5, 1000);
-    closeSession(db, first.sessionId, 2000);
-    const again = open(classA, 5, 3000);
-    expect(again).toEqual({ ok: true, sessionId: first.sessionId, reopened: true });
-    expect(db.select().from(sessions).get()).toMatchObject({
+  it("reopens a closed week, keeping its id and start time", async () => {
+    const first = await open(classA, 5, 1000);
+    await closeSession(db, first.sessionId, 2000);
+    const again = await open(classA, 5, 3000);
+    expect(again).toEqual({
+      ok: true,
+      sessionId: first.sessionId,
+      reopened: true,
+    });
+    expect(await db.select().from(sessions).get()).toMatchObject({
       status: "ACTIVE",
       startedAt: 1000,
       endedAt: null,
     });
   });
 
-  it("starts another week once the first is closed", () => {
-    closeSession(db, open(classA, 5).sessionId);
-    open(classA, 6);
-    expect(db.select().from(sessions).all()).toHaveLength(2);
+  it("starts another week once the first is closed", async () => {
+    await closeSession(db, (await open(classA, 5)).sessionId);
+    await open(classA, 6);
+    expect(await db.select().from(sessions).all()).toHaveLength(2);
   });
 
-  it("rejects unknown classes and weeks outside the range", () => {
-    expect(openSession(db, 999, 1)).toEqual({ ok: false, reason: "CLASS_NOT_FOUND" });
+  it("rejects unknown classes and weeks outside the range", async () => {
+    expect(await openSession(db, 999, 1)).toEqual({
+      ok: false,
+      reason: "CLASS_NOT_FOUND",
+    });
     for (const week of [0, 16, 1.5, -1]) {
-      expect(openSession(db, classA, week)).toEqual({ ok: false, reason: "BAD_WEEK" });
+      expect(await openSession(db, classA, week)).toEqual({
+        ok: false,
+        reason: "BAD_WEEK",
+      });
     }
   });
 });
 
 describe("closeSession", () => {
-  it("closes an active session once", () => {
-    const { sessionId } = open(classA, 5);
-    expect(closeSession(db, sessionId, 2000)).toBe(true);
+  it("closes an active session once", async () => {
+    const { sessionId } = await open(classA, 5);
+    expect(await closeSession(db, sessionId, 2000)).toBe(true);
     expect(
-      db.select().from(sessions).where(eq(sessions.id, sessionId)).get(),
+      await db.select().from(sessions).where(eq(sessions.id, sessionId)).get(),
     ).toMatchObject({ status: "CLOSED", endedAt: 2000 });
-    expect(closeSession(db, sessionId, 3000)).toBe(false);
-    expect(db.select().from(sessions).get()?.endedAt).toBe(2000);
+    expect(await closeSession(db, sessionId, 3000)).toBe(false);
+    expect((await db.select().from(sessions).get())?.endedAt).toBe(2000);
   });
 
-  it("returns false for an unknown session", () => {
-    expect(closeSession(db, "missing")).toBe(false);
+  it("returns false for an unknown session", async () => {
+    expect(await closeSession(db, "missing")).toBe(false);
   });
 });

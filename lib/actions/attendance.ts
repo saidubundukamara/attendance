@@ -24,7 +24,7 @@ export async function setAttendanceAction(
   const parsed = schema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid request." };
 
-  const result = setAttendance(db, parsed.data);
+  const result = await setAttendance(db, parsed.data);
   if (!result.ok) {
     const messages = {
       SESSION_NOT_FOUND: "Session not found.",
