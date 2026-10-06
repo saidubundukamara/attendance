@@ -29,7 +29,7 @@ All of these go in `.env.local`, which is gitignored.
 
 | Variable | What it is |
 |---|---|
-| `TURSO_DATABASE_URL` | Your Turso database address (`libsql://…`). Leave empty to use a local file. |
+| `TURSO_DATABASE_URL` | Your Turso database address (`libsql://…`). Leave empty to use a local file. See [Turso setup](#turso-setup). |
 | `TURSO_AUTH_TOKEN` | The token for that Turso database. |
 | `DATABASE_PATH` | The local SQLite file, used only when `TURSO_DATABASE_URL` is empty. Default `./data/attendance.db`. |
 | `APP_URL` | The address students' phones will open. It is encoded into every QR code, so it must be reachable from their phones. See [Testing with real phones](#testing-with-real-phones). |
@@ -161,6 +161,88 @@ Student IDs must be 4 to 12 digits. The check-in page assumes they are `90500` f
 
 Attendance is never lost when the sheet cannot be reached. It is saved in the local database first, shown as "not yet in the Google Sheet", and retried automatically while a session page is open. **Retry sync** forces it.
 
+## Turso setup
+
+The app stores sessions, check-ins and the queue of writes waiting to reach the sheet in a SQLite database. On your own machine that can be a plain file, and you can skip this section. On Vercel, or any host whose disk is wiped between deploys, a file would lose everything, so the database lives in [Turso](https://turso.tech), which is SQLite hosted for you. The free plan is more than enough for this app.
+
+You need two values from Turso: the database URL and an auth token.
+
+### 1. Create an account and a database
+
+**In the browser:** sign up at https://turso.tech, create a database from the dashboard, give it a name (for example `attendance`), and pick the region closest to where the app will be hosted. Every query is a network call, so a nearby region keeps pages fast.
+
+**Or with the CLI:**
+
+```bash
+brew install tursodatabase/tap/turso     # macOS; see turso.tech for other systems
+turso auth signup                        # or: turso auth login
+turso db create attendance
+```
+
+### 2. Get the URL and a token
+
+**In the browser:** open the database in the dashboard. Copy its URL, which starts with `libsql://`, then create a token for it and copy that too. The token is shown once.
+
+**Or with the CLI:**
+
+```bash
+turso db show attendance --url           # prints libsql://attendance-yourname.turso.io
+turso db tokens create attendance        # prints the token
+```
+
+Treat the token like a password: anyone who has it can read and change the attendance records. A token with read and write access is required; a read-only token lets pages load but every check-in fails.
+
+### 3. Fill in the two variables
+
+In `.env.local`:
+
+```bash
+TURSO_DATABASE_URL=libsql://attendance-yourname.turso.io
+TURSO_AUTH_TOKEN=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+```
+
+No quotes are needed. With both set, the app uses Turso everywhere, including on your own machine. Remove them (or leave them empty) to go back to the local file at `DATABASE_PATH`.
+
+### 4. Create the tables
+
+A new Turso database is empty. Run this once from your machine:
+
+```bash
+npm run db:migrate
+```
+
+It should print `Migrations applied to attendance-yourname.turso.io`. If it prints a file path instead, the two variables were not picked up; check they are in `.env.local` or `.env` and spelled exactly as above.
+
+Run it again whenever you pull changes that add files to `drizzle/`. It only applies what is new, so running it twice does no harm.
+
+### 5. Load your classes
+
+Restart the app, sign in, and press **Sync roster**. Classes and students are read from the Google Sheet into Turso. If they appear, the database is working.
+
+Moving to Turso does not carry over what was in a local file: the roster comes back from the sheet, but past sessions and each class's start date do not.
+
+### Checking what is in the database
+
+```bash
+turso db shell attendance "select code, total_weeks from classes"
+turso db shell attendance "select status, count(*) from sync_jobs group by status"
+```
+
+The second shows how many attendance marks are still waiting to reach the Google Sheet (`PENDING` or `FAILED`) and how many have arrived (`DONE`).
+
+### When something goes wrong
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `no such table: classes` (or any other table) | The tables were never created in this database. | Run `npm run db:migrate` with the Turso variables set. |
+| HTTP 401, or an "unauthorized" / "invalid token" error | The token is wrong, expired, or belongs to a different database. | Create a new token for this database and replace `TURSO_AUTH_TOKEN`. |
+| Pages load but check-ins and edits fail with a "read-only" or "not authorized to write" error | The token is read-only. | Create a token with write access. |
+| An invalid URL or unsupported scheme error at startup | `TURSO_DATABASE_URL` is not the `libsql://…` address, or has quotes or spaces around it. | Copy it again from `turso db show <name> --url`. |
+| `ENOTFOUND` or a connection timeout | The host name is mistyped, or the machine has no internet access. | Check the URL and the connection. |
+| It works locally but not on Vercel | The variables were added to `.env.local` only. | Add both under **Settings → Environment Variables** in Vercel and redeploy. |
+| `npm run db:migrate` reports a file path | It fell back to the local file because `TURSO_DATABASE_URL` was empty. | Set the variable and run it again. |
+| Every page is slow | The database region is far from the host. | Create the database in a region near the host. |
+
 ## Testing with real phones
 
 Students' phones cannot open `localhost`, so the QR needs a public address. A tunnel is the quickest way:
@@ -182,17 +264,9 @@ npm start
 
 Use the production build for real sessions; it is faster and has none of the dev-mode restrictions.
 
-### Database: Turso
-
-A local SQLite file is fine on your own machine, but hosts like Vercel have no disk that persists, so production uses Turso (hosted SQLite).
-
-1. Create a database at https://turso.tech and copy its URL and an auth token.
-2. Put them in `.env.local` as `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
-3. Run `npm run db:migrate` once. It creates the tables in Turso. Run it again after any deploy that adds files to `drizzle/`.
-
-With those two variables set, the app uses Turso everywhere, including on your own machine. Remove them to go back to the local file.
-
 ### Deploying to Vercel
+
+Vercel has no disk that persists, so do the [Turso setup](#turso-setup) first.
 
 1. Import the GitHub repository at https://vercel.com/new.
 2. Add every variable from the table above under **Settings → Environment Variables**, except `DATABASE_PATH`. Paste `GOOGLE_PRIVATE_KEY` without the surrounding quotes.
