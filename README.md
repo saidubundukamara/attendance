@@ -8,7 +8,7 @@ The lecturer starts a session and puts a rotating QR code on the projector. Stud
 - **Lecturer screens:** classes, the projected QR with a live count, attendance history with manual corrections, and a per-student summary.
 - **Abuse limits:** the QR changes every 60 seconds, one phone can check in one student per session, and repeated guesses are rate limited.
 
-Built with Next.js 16, SQLite (Drizzle) and the Google Sheets API. The full specification is in [`PRD.md`](PRD.md) and [`IMPLEMENTATION.md`](IMPLEMENTATION.md).
+Built with Next.js 16, Drizzle on SQLite (a local file in development, [Turso](https://turso.tech) in production) and the Google Sheets API. The full specification is in [`PRD.md`](PRD.md) and [`IMPLEMENTATION.md`](IMPLEMENTATION.md).
 
 ## Quick start
 
@@ -17,7 +17,7 @@ Requires Node.js 20.9 or later.
 ```bash
 npm install
 cp .env.example .env.local     # then fill it in, see below
-npm run db:migrate             # creates ./data/attendance.db
+npm run db:migrate             # creates the tables
 npm run dev
 ```
 
@@ -29,7 +29,9 @@ All of these go in `.env.local`, which is gitignored.
 
 | Variable | What it is |
 |---|---|
-| `DATABASE_PATH` | Where the SQLite file lives. Default `./data/attendance.db`. |
+| `TURSO_DATABASE_URL` | Your Turso database address (`libsql://…`). Leave empty to use a local file. |
+| `TURSO_AUTH_TOKEN` | The token for that Turso database. |
+| `DATABASE_PATH` | The local SQLite file, used only when `TURSO_DATABASE_URL` is empty. Default `./data/attendance.db`. |
 | `APP_URL` | The address students' phones will open. It is encoded into every QR code, so it must be reachable from their phones. See [Testing with real phones](#testing-with-real-phones). |
 | `LECTURER_PASSWORD` | The password for the lecturer sign-in. |
 | `AUTH_SECRET` | Signs the lecturer's session cookie. |
@@ -180,13 +182,28 @@ npm start
 
 Use the production build for real sessions; it is faster and has none of the dev-mode restrictions.
 
-Things to know before hosting it:
+### Database: Turso
 
-- **It needs a disk that persists.** The SQLite file must survive restarts and deploys. A small VPS or a host with a persistent volume works; point `DATABASE_PATH` at the volume. Serverless platforms with a read-only or temporary filesystem will lose the data.
-- **Run one instance.** Rate limits and the sheet-sync queue runner live in memory.
+A local SQLite file is fine on your own machine, but hosts like Vercel have no disk that persists, so production uses Turso (hosted SQLite).
+
+1. Create a database at https://turso.tech and copy its URL and an auth token.
+2. Put them in `.env.local` as `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
+3. Run `npm run db:migrate` once. It creates the tables in Turso. Run it again after any deploy that adds files to `drizzle/`.
+
+With those two variables set, the app uses Turso everywhere, including on your own machine. Remove them to go back to the local file.
+
+### Deploying to Vercel
+
+1. Import the GitHub repository at https://vercel.com/new.
+2. Add every variable from the table above under **Settings → Environment Variables**, except `DATABASE_PATH`. Paste `GOOGLE_PRIVATE_KEY` without the surrounding quotes.
+3. Set `APP_URL` to the deployment's public `https://` address, then redeploy so the QR codes point at it.
+4. Sign in and press **Sync roster**.
+
+Things to know:
+
+- **Rate limits are per server instance.** They live in memory, so on a platform that runs several instances they are looser than on a single server. The one-phone-per-session rule is enforced by the database and is not affected.
 - **Use HTTPS**, and set `APP_URL` to the `https://` address so cookies are marked secure.
-- **Run `npm run db:migrate`** after each deploy that includes new files in `drizzle/`.
-- **Back up the database file.** The sheet holds the marks, but the manual-change reasons and check-in audit log exist only in SQLite.
+- **Pick a Turso region near your Vercel region.** Every query is a network call.
 
 ## Scripts
 
@@ -196,7 +213,7 @@ Things to know before hosting it:
 | `npm run build` / `npm start` | Production build and server |
 | `npm test` | Unit tests (Vitest); no network or Google account needed |
 | `npm run lint` | ESLint |
-| `npm run db:migrate` | Apply migrations to the SQLite file |
+| `npm run db:migrate` | Apply migrations to Turso, or to the local file when Turso is not set |
 | `npm run db:generate` | Generate a migration after editing `lib/db/schema.ts` |
 
 ## Project layout
