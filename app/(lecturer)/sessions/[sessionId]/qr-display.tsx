@@ -51,7 +51,7 @@ export function QrDisplay({
 
     // A backgrounded tab may have skipped a rotation.
     function onVisible() {
-      if (document.visibilityState === "visible") refresh();
+      if (document.visibilityState === "visible") void refresh();
     }
 
     timer.current = setTimeout(refresh, initial.rotateInSeconds * 1000);
@@ -89,8 +89,12 @@ export function QrDisplay({
             role="status"
             className="absolute inset-0 flex animate-fade flex-col items-center justify-center gap-1 bg-white/95 text-center"
           >
-            <p className="text-2xl font-semibold tracking-tight">Reconnecting…</p>
-            <p className="text-muted">The code will return when the connection does.</p>
+            <p className="text-2xl font-semibold tracking-tight">
+              Reconnecting…
+            </p>
+            <p className="text-muted">
+              The code will return when the connection does.
+            </p>
           </div>
         )}
       </div>
