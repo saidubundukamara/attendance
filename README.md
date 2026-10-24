@@ -7,6 +7,7 @@ The lecturer starts a session and puts a rotating QR code on the projector. Stud
 - **Student page:** one small HTML response (under 6 KB, no framework), built for cheap phones and slow data. It works with JavaScript off.
 - **Lecturer screens:** classes, the projected QR with a live count, attendance history with manual corrections, and a per-student summary.
 - **Abuse limits:** the QR changes every 60 seconds, one phone can check in one student per session, and repeated guesses are rate limited.
+- **Assignment submissions:** the lecturer sets assignments, classwork and projects with deadlines. Students hand in PDF, Word or ZIP files at `/submit`; the files go to Google Drive and each class gets a `Subs of <CODE>` tab showing who submitted and when. See [Assignment submissions](#assignment-submissions).
 
 Built with Next.js 16, Drizzle on SQLite (a local file in development, [Turso](https://turso.tech) in production) and the Google Sheets API. The full specification is in [`PRD.md`](PRD.md) and [`IMPLEMENTATION.md`](IMPLEMENTATION.md).
 
@@ -39,6 +40,12 @@ All of these go in `.env.local`, which is gitignored.
 | `GOOGLE_SHEET_ID` | The spreadsheet to read the roster from and write attendance to. |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | The service account the app signs in to Google as. |
 | `GOOGLE_PRIVATE_KEY` | That service account's private key. |
+| `GOOGLE_DRIVE_MODE` | `oauth` (default) to store submissions in your own Google Drive, or `shared` for a Workspace Shared Drive. See [Google Drive setup](#google-drive-setup). |
+| `GOOGLE_DRIVE_FOLDER_ID` | The Drive folder submissions go into. |
+| `GOOGLE_OAUTH_CLIENT_ID` | OAuth client for `oauth` mode. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Its secret. |
+| `GOOGLE_OAUTH_REFRESH_TOKEN` | Printed by `node scripts/google-auth.mjs`. |
+| `APP_TIMEZONE` | The time zone deadlines are entered and shown in. Default `Africa/Freetown`. |
 
 Generate the two secrets with:
 
@@ -160,6 +167,131 @@ Student IDs must be 4 to 12 digits. The check-in page assumes they are `90500` f
 | `Student … not found in "Attn of …"` | The student was removed from the sheet after checking in. | Add them back, then press **Retry sync**. |
 
 Attendance is never lost when the sheet cannot be reached. It is saved in the local database first, shown as "not yet in the Google Sheet", and retried automatically while a session page is open. **Retry sync** forces it.
+
+## Assignment submissions
+
+On a class page, under **Assignments**, press **New item** and give it a title (for example `Assignment 1` or `Classwork - Week 5`), a type and a deadline. Open an item to see who has submitted, filter to who is missing, open their files in Drive, change the deadline, or close it.
+
+Students go to `<APP_URL>/submit`, choose their class, type the last four digits of their ID, pick the item and upload their files.
+
+- **Files:** PDF, Word (`.docx`) or ZIP, up to 5 files of 50 MB each per submission. The files go from the student's browser straight to Google Drive, so Vercel's 4.5 MB request limit does not apply.
+- **One submission per item.** Once it is in, the student cannot replace it. The page tells them this before they submit.
+- **Late work** is accepted and marked `LATE`. The student is warned before uploading and told again on the confirmation. Lateness is judged by when the upload started. Moving the deadline re-checks every submission. **Close submissions** stops all further uploads.
+- **In Drive** the files are stored as `<root folder>/<CODE - module>/<item title>/<ID> - <Name> - <file name>`.
+- **In the sheet** each class gets a `Subs of <CODE>` tab: `ID Number`, `Name`, then one column per item, holding the time each student submitted (`24 Oct 14:05`, or `LATE 26 Oct 09:12`). The app rebuilds this tab from its database after every submission, so **don't edit it by hand**; anything typed there is overwritten. If a write fails, the class and item pages say so and **Update sheet** retries.
+
+## Google Drive setup
+
+A service account cannot store files in a normal Google Drive: it has no storage of its own. So there are two ways to set this up.
+
+### Option A: your own Google Drive (personal Gmail works)
+
+The app signs in to Drive as you once and keeps a refresh token. It asks only for the `drive.file` permission, so it can see the folder it creates and the files it uploads, and nothing else in your Drive. Allow about ten minutes.
+
+Use the same Google Cloud project as the [Google Sheets setup](#google-sheets-setup). Its ID is the part of `GOOGLE_SERVICE_ACCOUNT_EMAIL` between `@` and `.iam`. In the links below, replace `PROJECT_ID` with it.
+
+#### 1. Turn on the Drive API
+
+Open `https://console.cloud.google.com/apis/library/drive.googleapis.com?project=PROJECT_ID` and press **Enable**.
+
+#### 2. Set up the consent screen
+
+This is what Google shows when you sign in. Open `https://console.cloud.google.com/auth/overview?project=PROJECT_ID`.
+
+1. If it asks you to get started, fill it in:
+   - App name: `Attendance`.
+   - **User support email**: your Gmail.
+   - Audience: **External**.
+   - **Developer contact email**: your Gmail.
+   - Agree to the policy and press **Create**.
+2. Go to **Audience** and press **Publish app**, then **Confirm**. The status should read **In production**.
+
+You do not need Google's verification. `drive.file` is a limited permission, so the app works for your own account without review; Google only warns that it is unverified when you sign in.
+
+**Don't leave the app in Testing.** In that state you get "Access blocked: … has not completed the Google verification process" unless your Gmail is listed under **Test users**. Even when it is listed, Google expires the refresh token after 7 days and uploads stop.
+
+#### 3. Create an OAuth client
+
+Open `https://console.cloud.google.com/auth/clients/create?project=PROJECT_ID`.
+
+1. Choose **Desktop app** as the application type. Name it `Attendance Drive` and press **Create**.
+2. If you chose **Web application** instead, add this exact address under **Authorised redirect URIs**, then press **Save**:
+
+   ```
+   http://127.0.0.1:53682
+   ```
+
+   The sign-in script always listens on that address. A Desktop app client accepts it without this step.
+3. Copy the **Client ID** and **Client secret** into `.env` (or `.env.local`):
+
+   ```
+   GOOGLE_OAUTH_CLIENT_ID=…apps.googleusercontent.com
+   GOOGLE_OAUTH_CLIENT_SECRET=…
+   ```
+
+#### 4. Sign in and create the folder
+
+```bash
+node scripts/google-auth.mjs
+```
+
+1. The script prints a Google sign-in link and waits. Open it in your browser.
+2. Sign in with the Google account that should hold the files.
+3. At "Google hasn't verified this app", choose **Advanced → Go to Attendance (unsafe)**. It is your own app.
+4. Allow access.
+5. The tab says "Signed in. You can close this tab and go back to the terminal."
+
+The script then creates an **Assignment Submissions** folder in your My Drive and prints:
+
+```
+GOOGLE_DRIVE_MODE=oauth
+GOOGLE_DRIVE_FOLDER_ID=…
+GOOGLE_OAUTH_REFRESH_TOKEN=…
+```
+
+Add those three lines to `.env`, along with `APP_TIMEZONE=Africa/Freetown` (or your time zone), and restart `npm run dev`. The refresh token is a password to your uploads folder: keep it out of git and out of chat messages.
+
+#### 5. Add the variables to Vercel
+
+Under **Settings → Environment Variables**, add these, then redeploy:
+
+- `GOOGLE_DRIVE_MODE`
+- `GOOGLE_DRIVE_FOLDER_ID`
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_OAUTH_REFRESH_TOKEN`
+- `APP_TIMEZONE`
+
+#### 6. Check it
+
+1. On a class page, add an item with **New assignment**.
+2. Open `<APP_URL>/submit` and hand in a file as one of your students. Try one over 5 MB too.
+3. The file should appear in Drive under `Assignment Submissions/<CODE - module>/<item title>/`, and a `Subs of <CODE>` tab should appear in the spreadsheet.
+4. You can delete the item afterwards from its page, as long as nobody else has submitted.
+
+You can rename the folder or share it with colleagues, but don't move the files out of it. The app only sees what it created. If you remove the app's access in your Google account (**Security → Third-party access**), uploads fail until you run the script again.
+
+### Option B: a Workspace Shared Drive
+
+If your institution has Google Workspace with Shared Drives:
+
+1. Enable the **Google Drive API** as above.
+2. Add the service account's email to the Shared Drive as a **Content manager**.
+3. Make a folder in the Shared Drive and copy its ID from the address bar (`…/folders/<ID>`).
+4. Set `GOOGLE_DRIVE_MODE=shared` and `GOOGLE_DRIVE_FOLDER_ID=<ID>`. The `GOOGLE_OAUTH_…` variables are not needed.
+
+### When something goes wrong
+
+| Message | Cause | Fix |
+|---|---|---|
+| `Error 400: redirect_uri_mismatch` when signing in | The OAuth client is a **Web application** without the script's address. | Add `http://127.0.0.1:53682` to its authorised redirect URIs (step 3), wait a few minutes, and open the link again. |
+| `Access blocked: … has not completed the Google verification process` | The consent screen is still in **Testing**. | Publish it (step 2). |
+| Google shows `500. That's an error.` while signing in | A consent screen change hasn't taken effect yet, or stale login cookies. | Wait about five minutes and open the link in a private window. Check the app name and both emails are filled in under **Branding**. |
+| `EADDRINUSE` when starting the script | An earlier run is still waiting on port 53682. | Stop it (Ctrl+C), or run with `GOOGLE_AUTH_PORT=53683` and add that address to the client instead. |
+| Students see "The upload did not go through" straight away | Drive is not set up, a variable is missing, or the server was not restarted. The server log has the detail. | Check the variables and restart. |
+| `invalid_grant` in the server log | The refresh token expired or access was removed. | Publish the consent screen (step 2), then run the script again and replace `GOOGLE_OAUTH_REFRESH_TOKEN`. |
+| `File not found` for the root folder | `GOOGLE_DRIVE_FOLDER_ID` is wrong, or the folder was not created by the script. | Use the ID the script printed. |
+| `Service Accounts do not have storage quota` | `GOOGLE_DRIVE_MODE=shared` with a folder in someone's My Drive. | Use a Shared Drive, or Option A. |
 
 ## Turso setup
 
@@ -289,17 +421,22 @@ Things to know:
 | `npm run lint` | ESLint |
 | `npm run db:migrate` | Apply migrations to Turso, or to the local file when Turso is not set |
 | `npm run db:generate` | Generate a migration after editing `lib/db/schema.ts` |
+| `node scripts/google-auth.mjs` | One-time Google Drive sign-in for submissions (see [Google Drive setup](#google-drive-setup)) |
 
 ## Project layout
 
 ```
 app/a/               Student check-in (plain HTML route)
+app/submit/          Student assignment submission
+app/api/submit/      Submission lookup, upload start and confirm
 app/(lecturer)/      Classes, live session, class history, student summary
 app/login/           Lecturer sign-in
 app/api/sessions/    QR refresh and live-count polling
 components/ui/       Buttons, notices, icons and other shared pieces
 lib/sheets/          Google Sheets client, tab parser, roster sync, write queue
 lib/checkin.ts       Check-in rules
+lib/submissions.ts   Submission rules
+lib/google/drive.ts  Google Drive client (resumable uploads)
 lib/token.ts         Signed QR tokens and passes
 lib/db/              Schema and database client
 drizzle/             SQL migrations
