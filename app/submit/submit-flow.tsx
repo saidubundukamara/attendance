@@ -1,10 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ConfirmButton } from "@/components/ui/confirm-button";
 import { inputClass, Label } from "@/components/ui/field";
-import { ArrowLeft, Check, Cross } from "@/components/ui/icons";
+import { ArrowLeft, Check, Clock, Cross } from "@/components/ui/icons";
 import { Notice } from "@/components/ui/notice";
 import { STUDENT_ID_PREFIX } from "@/lib/student-id";
 import {
@@ -14,7 +14,12 @@ import {
   MAX_FILES,
 } from "@/lib/submission-files";
 import type { LookupResult, StudentItem } from "@/lib/submissions";
-import { formatDeadline, formatStamp, relativeToNow } from "@/lib/timezone";
+import {
+  formatDeadline,
+  formatStamp,
+  timeLeft,
+  type Urgency,
+} from "@/lib/timezone";
 
 type ClassOption = { id: number; code: string; moduleName: string | null };
 type Student = Extract<LookupResult, { code: "OK" }>["student"];
@@ -100,9 +105,35 @@ export function SubmitFlow({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  // True while files are dragged over the drop zone.
+  const [dragging, setDragging] = useState(false);
+  const uploadStep = item !== null && done === null;
 
-  // The clock deadlines are judged against; moved on whenever the student acts.
+  // A file dropped just outside the zone would make the browser open it and
+  // leave the page, losing the student's place. Swallow those drops.
+  useEffect(() => {
+    if (!uploadStep) return;
+    const block = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+    };
+    window.addEventListener("dragover", block);
+    window.addEventListener("drop", block);
+    return () => {
+      window.removeEventListener("dragover", block);
+      window.removeEventListener("drop", block);
+    };
+  }, [uploadStep]);
+
+  // The clock deadlines are judged against; moved on whenever the student
+  // acts, and every half minute while the list or upload step is showing so
+  // the countdowns stay true.
   const [now, setNow] = useState(() => Date.now());
+  const signedIn = student !== null;
+  useEffect(() => {
+    if (!signedIn) return;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [signedIn]);
   const cls = classes.find((c) => c.id === classId);
 
   async function lookup() {
@@ -353,29 +384,42 @@ export function SubmitFlow({
                   >
                     <span className="flex items-baseline justify-between gap-3">
                       <span className="font-medium">{it.title}</span>
-                      <span className="text-xs tracking-wide text-muted uppercase">
+                      <span className="shrink-0 text-sm text-muted">
                         {KIND_LABEL[it.kind]}
                       </span>
                     </span>
-                    <span className="mt-1 block text-sm">
-                      {sub ? (
-                        <span
-                          className={sub.late ? "text-warn" : "text-accent-strong"}
-                        >
-                          {sub.late ? "Submitted late" : "Submitted"} ·{" "}
-                          {formatStamp(sub.submittedAt, timeZone)}
-                        </span>
-                      ) : !it.open ? (
-                        <span className="text-muted">Closed</span>
-                      ) : overdue ? (
-                        <span className="text-warn">
-                          Deadline passed {relativeToNow(it.dueAt, now)} · will
-                          be marked LATE
+                    <span className="mt-1.5 block text-sm">
+                      {sub || !it.open ? (
+                        // Done or closed: the deadline stays on show, quieter.
+                        <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span className="font-medium text-ink/80 tabular-nums">
+                            {overdue ? "Was due" : "Due"}{" "}
+                            {formatDeadline(it.dueAt, timeZone)}
+                          </span>
+                          {sub ? (
+                            <span
+                              className={`inline-flex items-center gap-1 ${sub.late ? "text-warn" : "text-accent-strong"}`}
+                            >
+                              <Check className="size-3.5" />
+                              {sub.late ? "Submitted late" : "Submitted"} ·{" "}
+                              {formatStamp(sub.submittedAt, timeZone)}
+                            </span>
+                          ) : (
+                            <span className="text-muted">Closed</span>
+                          )}
                         </span>
                       ) : (
-                        <span className="text-muted">
-                          Due {formatDeadline(it.dueAt, timeZone)} ·{" "}
-                          {relativeToNow(it.dueAt, now)}
+                        <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                          <span className="font-medium tabular-nums">
+                            {overdue ? "Was due" : "Due"}{" "}
+                            {formatDeadline(it.dueAt, timeZone)}
+                          </span>
+                          <Countdown dueAt={it.dueAt} now={now} />
+                          {overdue && (
+                            <span className="basis-full text-danger">
+                              You can still submit, but it will be marked LATE.
+                            </span>
+                          )}
                         </span>
                       )}
                     </span>
@@ -436,7 +480,11 @@ export function SubmitFlow({
   const total = files.reduce((sum, f) => sum + f.size, 0);
   const sent = progress?.reduce((sum, n) => sum + n, 0) ?? 0;
   const label =
-    files.length === 1 ? "Submit 1 file" : `Submit ${files.length} files`;
+    files.length === 0
+      ? "Submit"
+      : files.length === 1
+        ? "Submit 1 file"
+        : `Submit ${files.length} files`;
 
   return (
     <div className="animate-rise">
@@ -453,18 +501,9 @@ export function SubmitFlow({
       <h2 className="mt-3 text-2xl font-semibold tracking-tight">
         {item.title}
       </h2>
-      <p className={`mt-1 ${overdue ? "text-warn" : "text-muted"}`}>
-        Due {formatDeadline(item.dueAt, timeZone)} ·{" "}
-        {relativeToNow(item.dueAt, now)}
-      </p>
+      <DeadlinePanel dueAt={item.dueAt} now={now} timeZone={timeZone} />
       {item.instructions && (
-        <p className="mt-4 whitespace-pre-line text-sm">{item.instructions}</p>
-      )}
-      {overdue && (
-        <Notice tone="warn" className="mt-5">
-          The deadline has passed. You can still submit, but it will be marked{" "}
-          <strong>LATE</strong>.
-        </Notice>
+        <p className="mt-5 whitespace-pre-line text-sm">{item.instructions}</p>
       )}
 
       <div className="mt-6">
@@ -480,9 +519,36 @@ export function SubmitFlow({
         />
         <label
           htmlFor="files"
-          className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-line-strong bg-surface px-4 py-8 text-center transition-colors duration-200 hover:bg-sunken"
+          onDragEnter={(event) => {
+            if (busy) return;
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragOver={(event) => {
+            if (busy) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onDragLeave={(event) => {
+            // Ignore moves between the zone's own children.
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setDragging(false);
+            }
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragging(false);
+            if (!busy) addFiles(event.dataTransfer.files);
+          }}
+          className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed px-4 py-8 text-center transition-[background-color,border-color,transform] duration-200 ease-out-expo ${
+            dragging
+              ? "scale-[1.01] border-accent bg-accent-soft"
+              : "border-line-strong bg-surface hover:bg-sunken"
+          }`}
         >
-          <span className="font-medium">Choose files</span>
+          <span className="font-medium">
+            {dragging ? "Drop to add" : "Drag files here or choose files"}
+          </span>
           <span className="mt-1 text-sm text-muted">
             PDF, Word (.docx) or ZIP · up to {MAX_FILES} files, {MAX_FILE_BYTES / 1024 / 1024} MB each
           </span>
@@ -565,6 +631,81 @@ export function SubmitFlow({
           </Button>
         )}
       </div>
+    </div>
+  );
+}
+
+const COUNTDOWN_TONE: Record<Urgency, string> = {
+  later: "bg-accent-soft text-accent-strong",
+  soon: "bg-warn-soft text-warn",
+  today: "bg-warn-soft text-warn",
+  passed: "bg-danger-soft text-danger",
+};
+
+// "2 days 5 h left" as a pill whose colour warms as the deadline nears.
+function Countdown({ dueAt, now }: { dueAt: number; now: number }) {
+  const left = timeLeft(dueAt, now);
+  return (
+    <span
+      className={`inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium tabular-nums ${COUNTDOWN_TONE[left.urgency]}`}
+    >
+      <Clock className="size-3.5" />
+      {left.text}
+    </span>
+  );
+}
+
+const PANEL_TONE: Record<Urgency, string> = {
+  later: "bg-surface ring-line",
+  soon: "bg-warn-soft ring-warn/25",
+  today: "bg-warn-soft ring-warn/25",
+  passed: "bg-danger-soft ring-danger/25",
+};
+
+const PANEL_TEXT: Record<Urgency, string> = {
+  later: "text-accent-strong",
+  soon: "text-warn",
+  today: "text-warn",
+  passed: "text-danger",
+};
+
+// The deadline at the top of the upload step: the date large enough to
+// register, and how long is left in the colour of its urgency.
+function DeadlinePanel({
+  dueAt,
+  now,
+  timeZone,
+}: {
+  dueAt: number;
+  now: number;
+  timeZone: string;
+}) {
+  const left = timeLeft(dueAt, now);
+  const passed = left.urgency === "passed";
+  return (
+    <div
+      className={`mt-4 rounded-2xl px-4 py-3.5 ring-1 ring-inset ${PANEL_TONE[left.urgency]}`}
+    >
+      <p className="text-xl font-semibold tracking-tight tabular-nums sm:text-2xl">
+        <span className="font-normal text-muted">{passed ? "Was due" : "Due"}</span>{" "}
+        {formatDeadline(dueAt, timeZone)}
+      </p>
+      <p
+        className={`mt-1 flex items-center gap-1.5 font-medium tabular-nums ${PANEL_TEXT[left.urgency]}`}
+      >
+        <Clock className="size-4 shrink-0" />
+        {left.text}
+      </p>
+      {passed ? (
+        <p className="mt-2 text-sm">
+          You can still submit, but it will be marked <strong>LATE</strong>.
+        </p>
+      ) : left.urgency === "today" ? (
+        <p className="mt-2 text-sm">
+          Less than a day to go. Anything sent after the deadline is marked
+          LATE.
+        </p>
+      ) : null}
     </div>
   );
 }
