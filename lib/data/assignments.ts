@@ -162,3 +162,81 @@ export async function hasSubmissions(db: Db, assignmentId: number) {
     .get();
   return (row?.value ?? 0) > 0;
 }
+
+export type MatrixCell = { late: boolean; submittedAt: number } | null;
+
+// Every student against every item in a class: who handed in what, so the
+// missing work can be listed per item and per student.
+export async function getClassSubmissionMatrix(db: Db, classId: number) {
+  const items = await db
+    .select({
+      id: assignments.id,
+      title: assignments.title,
+      kind: assignments.kind,
+      dueAt: assignments.dueAt,
+      open: assignments.open,
+    })
+    .from(assignments)
+    .where(eq(assignments.classId, classId))
+    .orderBy(asc(assignments.dueAt), asc(assignments.id))
+    .all();
+
+  const done = items.length
+    ? await db
+        .select({
+          studentId: submissions.studentId,
+          assignmentId: submissions.assignmentId,
+          late: submissions.late,
+          submittedAt: submissions.submittedAt,
+        })
+        .from(submissions)
+        .where(
+          and(
+            eq(submissions.status, "COMPLETE"),
+            inArray(
+              submissions.assignmentId,
+              items.map((i) => i.id),
+            ),
+          ),
+        )
+        .all()
+    : [];
+
+  // Students who have left the sheet are no longer chased for work.
+  const roster = await db
+    .select({
+      id: students.id,
+      studentId: students.studentId,
+      name: students.name,
+    })
+    .from(enrollments)
+    .innerJoin(students, eq(students.id, enrollments.studentId))
+    .where(and(eq(enrollments.classId, classId), eq(enrollments.active, true)))
+    .orderBy(asc(students.name))
+    .all();
+
+  const cells = new Map<string, MatrixCell>();
+  for (const d of done) {
+    cells.set(`${d.studentId}:${d.assignmentId}`, {
+      late: d.late,
+      submittedAt: d.submittedAt ?? 0,
+    });
+  }
+  const cell = (studentRowId: number, assignmentId: number): MatrixCell =>
+    cells.get(`${studentRowId}:${assignmentId}`) ?? null;
+
+  return {
+    items: items.map((item) => ({
+      ...item,
+      missing: roster.filter((s) => !cell(s.id, item.id)),
+    })),
+    students: roster.map((s) => ({
+      ...s,
+      cells: Object.fromEntries(items.map((i) => [i.id, cell(s.id, i.id)])) as Record<
+        number,
+        MatrixCell
+      >,
+      missing: items.filter((i) => !cell(s.id, i.id)).length,
+    })),
+  };
+}

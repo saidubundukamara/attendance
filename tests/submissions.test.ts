@@ -294,3 +294,28 @@ describe("startSubmission and completeSubmission", () => {
     expect((await db.select().from(submissions).get())?.late).toBe(false);
   });
 });
+
+describe("getClassSubmissionMatrix", () => {
+  it("lists who is missing per item and counts per student", async () => {
+    const { getClassSubmissionMatrix } = await import("@/lib/data/assignments");
+    const second = (
+      await db
+        .insert(assignments)
+        .values({ classId, title: "Classwork - Week 5", dueAt: NOW - DAY, createdAt: NOW })
+        .returning()
+        .get()
+    ).id;
+    await submitOk();
+    const matrix = await getClassSubmissionMatrix(db, classId);
+
+    // Only active students are chased; Ada has handed in Assignment 1.
+    expect(matrix.students.map((s) => s.name)).toEqual(["Ada Lovelace"]);
+    const byTitle = Object.fromEntries(
+      matrix.items.map((i) => [i.title, i.missing.map((s) => s.name)]),
+    );
+    expect(byTitle).toEqual({ "Classwork - Week 5": ["Ada Lovelace"], "Assignment 1": [] });
+    expect(matrix.students[0].missing).toBe(1);
+    expect(matrix.students[0].cells[second]).toBeNull();
+    expect(matrix.students[0].cells[assignmentId]).toMatchObject({ late: false });
+  });
+});

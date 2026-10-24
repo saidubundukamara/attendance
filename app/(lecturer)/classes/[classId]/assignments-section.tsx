@@ -46,7 +46,17 @@ export function AssignmentsSection({
             {items.length}
           </span>
         </h2>
-        <CopyLinkButton url={submitUrl} />
+        <div className="flex flex-wrap items-center gap-2">
+          {items.length > 0 && (
+            <Link
+              href={`/classes/${classId}/missing`}
+              className="inline-flex h-8 items-center rounded-full px-3.5 text-sm font-medium ring-1 ring-line-strong ring-inset transition-colors duration-200 hover:bg-sunken"
+            >
+              Missing work
+            </Link>
+          )}
+          <CopyLinkButton url={submitUrl} />
+        </div>
       </div>
       <p className="mt-1 max-w-prose text-sm text-muted">
         Students hand in at{" "}
