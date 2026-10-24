@@ -175,6 +175,12 @@ export const assignments = sqliteTable(
     open: integer("open", { mode: "boolean" }).notNull().default(true),
     // Created on first use; files land in <root>/<class>/<title>/.
     driveFolderId: text("drive_folder_id"),
+    // Group work: one student submits for up to `maxGroupSize` people,
+    // themselves included.
+    groupWork: integer("group_work", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    maxGroupSize: integer("max_group_size"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [uniqueIndex("assignments_class_title_uq").on(t.classId, t.title)],
@@ -229,4 +235,31 @@ export const submissionFiles = sqliteTable(
     driveFileId: text("drive_file_id"),
   },
   (t) => [index("submission_files_submission_idx").on(t.submissionId)],
+);
+
+// Everyone a submission covers: the student who submitted, plus their group
+// mates on group work. "Has this student handed in?" is answered here, joined
+// to a COMPLETE submission. Rows of an unfinished (PENDING) submission are
+// kept too and simply don't count until it completes.
+export const submissionMembers = sqliteTable(
+  "submission_members",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    submissionId: integer("submission_id")
+      .notNull()
+      .references(() => submissions.id),
+    assignmentId: integer("assignment_id")
+      .notNull()
+      .references(() => assignments.id),
+    studentId: integer("student_id")
+      .notNull()
+      .references(() => students.id),
+  },
+  (t) => [
+    index("submission_members_assignment_student_idx").on(
+      t.assignmentId,
+      t.studentId,
+    ),
+    index("submission_members_submission_idx").on(t.submissionId),
+  ],
 );
