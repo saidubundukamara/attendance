@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ConfirmButton } from "@/components/ui/confirm-button";
 import { inputClass, Label } from "@/components/ui/field";
-import { ArrowLeft, Check, Clock, Cross } from "@/components/ui/icons";
+import { ArrowLeft, Check, Clock, Cross, Plus } from "@/components/ui/icons";
 import { Notice } from "@/components/ui/notice";
 import { RichText } from "@/components/ui/rich-text";
 import { STUDENT_ID_PREFIX } from "@/lib/student-id";
@@ -24,7 +24,14 @@ import {
 
 type ClassOption = { id: number; code: string; moduleName: string | null };
 type Student = Extract<LookupResult, { code: "OK" }>["student"];
-type Done = { late: boolean; submittedAt: number; files: string[] };
+type Done = {
+  late: boolean;
+  submittedAt: number;
+  files: string[];
+  members: string[];
+};
+// A group mate added on the upload step, as the server confirmed them.
+type Member = { digits: string; studentId: string; name: string };
 
 const MESSAGES: Record<string, string> = {
   NOT_FOUND: "That ID is not on this class's list. Check the class and the digits.",
@@ -101,6 +108,7 @@ export function SubmitFlow({
   const [items, setItems] = useState<StudentItem[]>([]);
   const [item, setItem] = useState<StudentItem | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
   const [progress, setProgress] = useState<number[] | null>(null);
   const [done, setDone] = useState<Done | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +179,7 @@ export function SubmitFlow({
   function pick(next: StudentItem | null) {
     setItem(next);
     setFiles([]);
+    setMembers([]);
     setDone(null);
     setProgress(null);
     setError(null);
@@ -218,6 +227,7 @@ export function SubmitFlow({
         classId,
         studentId: digits,
         assignmentId: item.id,
+        members: item.groupWork ? members.map((m) => m.digits) : [],
         files: files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
       });
       if (start.code !== "OK" || !("uploads" in start)) {
@@ -258,11 +268,14 @@ export function SubmitFlow({
         late: complete.late,
         submittedAt: complete.submittedAt,
         files: complete.files,
+        members: complete.members,
       };
       setDone(result);
       setItems((all) =>
         all.map((it) =>
-          it.id === item.id ? { ...it, submission: result } : it,
+          it.id === item.id
+            ? { ...it, submission: { ...result, submittedBy: null } }
+            : it,
         ),
       );
     } catch {
@@ -387,6 +400,7 @@ export function SubmitFlow({
                       <span className="font-medium">{it.title}</span>
                       <span className="shrink-0 text-sm text-muted">
                         {KIND_LABEL[it.kind]}
+                        {it.groupWork && ` · group of up to ${it.maxGroupSize}`}
                       </span>
                     </span>
                     <span className="mt-1.5 block text-sm">
@@ -401,9 +415,11 @@ export function SubmitFlow({
                             <span
                               className={`inline-flex items-center gap-1 ${sub.late ? "text-warn" : "text-accent-strong"}`}
                             >
-                              <Check className="size-3.5" />
-                              {sub.late ? "Submitted late" : "Submitted"} ·{" "}
-                              {formatStamp(sub.submittedAt, timeZone)}
+                              <Check className="size-3.5 shrink-0" />
+                              {sub.late ? "Submitted late" : "Submitted"}
+                              {sub.submittedBy &&
+                                ` by ${sub.submittedBy} for your group`}{" "}
+                              · {formatStamp(sub.submittedAt, timeZone)}
                             </span>
                           ) : (
                             <span className="text-muted">Closed</span>
@@ -457,6 +473,13 @@ export function SubmitFlow({
             <strong>LATE</strong>.
           </Notice>
         )}
+        {done.members.length > 1 && (
+          <p className="mt-5 text-sm">
+            Handed in for{" "}
+            <span className="font-medium">{done.members.join(", ")}</span>.
+            They don&rsquo;t need to submit it again.
+          </p>
+        )}
         <ul className="mt-6 space-y-1 text-sm">
           {done.files.map((name) => (
             <li key={name} className="truncate">
@@ -505,6 +528,17 @@ export function SubmitFlow({
       <DeadlinePanel dueAt={item.dueAt} now={now} timeZone={timeZone} />
       {item.instructions && (
         <RichText text={item.instructions} className="mt-5 text-sm" />
+      )}
+      {item.groupWork && classId !== "" && (
+        <GroupMembers
+          classId={classId}
+          assignmentId={item.id}
+          submitter={{ digits, name: student.name }}
+          max={item.maxGroupSize ?? 1}
+          members={members}
+          onChange={setMembers}
+          disabled={busy}
+        />
       )}
 
       <div className="mt-6">
@@ -708,5 +742,159 @@ function DeadlinePanel({
         </p>
       ) : null}
     </div>
+  );
+}
+
+// The submitter and the group mates they add by the last four digits of
+// their ID. Each one is checked with the server so the name shows before
+// anything is sent; the start request checks them all again.
+function GroupMembers({
+  classId,
+  assignmentId,
+  submitter,
+  max,
+  members,
+  onChange,
+  disabled,
+}: {
+  classId: number;
+  assignmentId: number;
+  submitter: { digits: string; name: string };
+  max: number;
+  members: Member[];
+  onChange: (next: Member[]) => void;
+  disabled: boolean;
+}) {
+  const [entry, setEntry] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const full = members.length + 1 >= max;
+
+  async function add() {
+    if (entry.length !== 4) return;
+    if (entry === submitter.digits || members.some((m) => m.digits === entry)) {
+      setProblem("They're already in the group.");
+      return;
+    }
+    setChecking(true);
+    setProblem(null);
+    try {
+      const result = await post<
+        | { code: "OK"; member: { studentId: string; name: string } }
+        | { code: string; message?: string }
+      >("/api/submit/member", {
+        classId,
+        assignmentId,
+        studentId: submitter.digits,
+        memberId: entry,
+      });
+      if (result.code === "OK" && "member" in result) {
+        onChange([...members, { digits: entry, ...result.member }]);
+        setEntry("");
+      } else {
+        setProblem(
+          result.code === "NOT_FOUND"
+            ? `No one with an ID ending ${entry} is in this class.`
+            : message(result),
+        );
+      }
+    } catch {
+      setProblem(MESSAGES.BAD_REQUEST);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  return (
+    <section className="mt-6" aria-labelledby="group-heading">
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 id="group-heading" className="font-semibold">
+          Group members
+        </h3>
+        <span className="text-sm text-muted tabular-nums">
+          {members.length + 1} of {max}
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-muted">
+        Add everyone in your group. They&rsquo;ll all be marked as submitted,
+        so only one of you hands in.
+      </p>
+      <ul className="mt-3 divide-y divide-line overflow-hidden rounded-2xl bg-surface ring-1 ring-line">
+        <li className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-sm">
+          <span className="font-medium">{submitter.name}</span>
+          <span className="text-muted">You</span>
+        </li>
+        {members.map((m) => (
+          <li
+            key={m.digits}
+            className="flex animate-rise items-center justify-between gap-3 px-3.5 py-2 text-sm"
+          >
+            <span className="min-w-0">
+              <span className="font-medium">{m.name}</span>{" "}
+              <span className="font-mono text-xs text-muted">{m.studentId}</span>
+            </span>
+            {!disabled && (
+              <button
+                type="button"
+                aria-label={`Remove ${m.name}`}
+                onClick={() =>
+                  onChange(members.filter((x) => x.digits !== m.digits))
+                }
+                className="shrink-0 rounded-full p-1.5 text-muted hover:bg-ink/5 hover:text-ink"
+              >
+                <Cross className="size-3.5" />
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {full ? (
+        <p className="mt-2 text-sm text-muted">
+          That&rsquo;s the largest group this item allows.
+        </p>
+      ) : (
+        !disabled && (
+          <form
+            className="mt-3 flex flex-wrap items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void add();
+            }}
+          >
+            <label htmlFor="member" className="sr-only">
+              Last 4 digits of a group member&rsquo;s student ID
+            </label>
+            <span className="font-mono text-muted">{STUDENT_ID_PREFIX}</span>
+            <input
+              id="member"
+              inputMode="numeric"
+              autoComplete="off"
+              pattern="\d{4}"
+              maxLength={4}
+              value={entry}
+              onChange={(e) => {
+                setEntry(e.target.value.replace(/\D/g, ""));
+                setProblem(null);
+              }}
+              placeholder="0000"
+              className={`${inputClass} w-24 font-mono tracking-[0.3em]`}
+            />
+            <Button
+              type="submit"
+              variant="secondary"
+              disabled={checking || entry.length !== 4}
+            >
+              {!checking && <Plus className="size-3.5" />}
+              {checking ? "Checking…" : "Add member"}
+            </Button>
+          </form>
+        )
+      )}
+      {problem && (
+        <p role="alert" className="mt-2 text-sm text-danger">
+          {problem}
+        </p>
+      )}
+    </section>
   );
 }
