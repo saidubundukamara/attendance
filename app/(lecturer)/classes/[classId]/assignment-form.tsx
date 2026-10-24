@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { inputClass, Label } from "@/components/ui/field";
 import {
@@ -13,6 +13,8 @@ type Values = {
   kind: "ASSIGNMENT" | "CLASSWORK" | "PROJECT";
   dueAt: string;
   instructions: string;
+  groupWork: boolean;
+  maxGroupSize: number;
 };
 
 // Adds an item to a class, or edits one when `assignmentId` is given.
@@ -21,11 +23,14 @@ export function AssignmentForm({
   assignmentId,
   values,
   timeZone,
+  groupLocked = false,
 }: {
   classId: number;
   assignmentId?: number;
   values: Values;
   timeZone: string;
+  // True once anyone has handed in: group settings can no longer change.
+  groupLocked?: boolean;
 }) {
   const editing = assignmentId !== undefined;
   const [state, action, pending] = useActionState(
@@ -33,6 +38,10 @@ export function AssignmentForm({
     undefined,
   );
   const form = useRef<HTMLFormElement>(null);
+  const [groupWork, setGroupWork] = useState(values.groupWork);
+  // On a new item the box follows the type (Projects are group work) until
+  // the lecturer ticks or unticks it themselves.
+  const [groupTouched, setGroupTouched] = useState(editing);
 
   // A new item was added: clear the title for the next one.
   useEffect(() => {
@@ -70,6 +79,11 @@ export function AssignmentForm({
           id={`${prefix}-kind`}
           name="kind"
           defaultValue={values.kind}
+          onChange={(event) => {
+            if (!groupTouched && !groupLocked) {
+              setGroupWork(event.target.value === "PROJECT");
+            }
+          }}
           className={`${inputClass} w-full`}
         >
           <option value="ASSIGNMENT">Assignment</option>
@@ -88,6 +102,46 @@ export function AssignmentForm({
           className={`${inputClass} w-full`}
         />
       </div>
+      <fieldset className="sm:col-span-2" disabled={groupLocked}>
+        <legend className="sr-only">Group work</legend>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+          <label className="inline-flex min-h-10 cursor-pointer items-center gap-2.5 text-sm font-medium">
+            <input
+              type="checkbox"
+              name="groupWork"
+              checked={groupWork}
+              onChange={(event) => {
+                setGroupTouched(true);
+                setGroupWork(event.target.checked);
+              }}
+              className="size-4 accent-accent"
+            />
+            Group work
+          </label>
+          {groupWork && (
+            <label className="inline-flex items-center gap-2.5 text-sm">
+              Up to
+              <input
+                type="number"
+                name="maxGroupSize"
+                min={2}
+                max={10}
+                required
+                defaultValue={values.maxGroupSize}
+                className={`${inputClass} w-20 tabular-nums`}
+              />
+              people per group
+            </label>
+          )}
+        </div>
+        <p className="mt-1.5 text-xs text-muted">
+          {groupLocked
+            ? "Fixed now that students have started handing in."
+            : groupWork
+              ? "One student submits for the group and adds the others by ID. Everyone listed is marked as submitted."
+              : "Each student submits their own work."}
+        </p>
+      </fieldset>
       <div className="sm:col-span-2">
         <Label htmlFor={`${prefix}-instructions`}>
           Instructions <span className="font-normal text-muted">(optional)</span>

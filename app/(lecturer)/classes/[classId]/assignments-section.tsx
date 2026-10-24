@@ -102,6 +102,7 @@ export function AssignmentsSection({
                     <span className="font-medium">{item.title}</span>
                     <span className="ml-2 text-sm text-muted">
                       {KIND_LABEL[item.kind]}
+                      {item.groupWork && " · group work"}
                     </span>
                     <span className="block text-sm text-muted">
                       <span
@@ -145,6 +146,8 @@ export function AssignmentsSection({
             kind: "ASSIGNMENT",
             dueAt: nextWeek(timeZone, now),
             instructions: "",
+            groupWork: false,
+            maxGroupSize: 4,
           }}
         />
       </details>

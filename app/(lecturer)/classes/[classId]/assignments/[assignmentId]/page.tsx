@@ -5,7 +5,11 @@ import { ArrowRight } from "@/components/ui/icons";
 import { Notice } from "@/components/ui/notice";
 import { RichText } from "@/components/ui/rich-text";
 import { requireLecturer } from "@/lib/auth";
-import { getAssignmentDetail, type RosterEntry } from "@/lib/data/assignments";
+import {
+  getAssignmentDetail,
+  hasSubmissions,
+  type RosterEntry,
+} from "@/lib/data/assignments";
 import { db } from "@/lib/db";
 import { driveFileUrl, driveFolderUrl } from "@/lib/google/drive";
 import {
@@ -70,6 +74,8 @@ export default async function AssignmentPage({
   const submitted = roster.filter((e) => e.submission).length;
   const late = roster.filter((e) => e.submission?.late).length;
   const anyStarted = submitted > 0;
+  // Includes uploads still in progress, matching what updateAssignment checks.
+  const groupLocked = anyStarted || (await hasSubmissions(db, assignment.id));
 
   // One-press extensions. From the current deadline while it is ahead;
   // once it has passed, from tonight at 23:59 so the options are sensible.
@@ -111,6 +117,12 @@ export default async function AssignmentPage({
           timeZone={timeZone}
           quick={quick}
         />
+        {assignment.groupWork && (
+          <p className="mt-2 text-sm text-muted">
+            Group work · up to {assignment.maxGroupSize} per group. One student
+            submits for everyone listed.
+          </p>
+        )}
         {assignment.instructions && (
           // Folded so long instructions don't push the roster down.
           <details className="group mt-3">
@@ -207,6 +219,15 @@ export default async function AssignmentPage({
                   <p className="font-mono text-xs text-muted">
                     {entry.studentId}
                   </p>
+                  {entry.submission?.submittedBy ? (
+                    <p className="mt-1 text-sm text-muted">
+                      Submitted by {entry.submission.submittedBy}
+                    </p>
+                  ) : entry.submission?.groupmates.length ? (
+                    <p className="mt-1 text-sm text-muted">
+                      For the group, with {entry.submission.groupmates.join(", ")}
+                    </p>
+                  ) : null}
                 </div>
                 {entry.submission ? (
                   <div className="text-right text-sm">
@@ -255,7 +276,7 @@ export default async function AssignmentPage({
           <summary className="inline-flex cursor-pointer list-none items-center gap-2 text-lg font-semibold tracking-tight [&::-webkit-details-marker]:hidden">
             Edit details
             <span className="text-sm font-normal text-muted group-open:hidden">
-              title, type, deadline, instructions
+              title, type, deadline, group, instructions
             </span>
           </summary>
           <p className="mt-1 max-w-prose text-sm text-muted">
@@ -270,7 +291,10 @@ export default async function AssignmentPage({
               kind: assignment.kind,
               dueAt: msToLocalInput(assignment.dueAt, timeZone),
               instructions: assignment.instructions ?? "",
+              groupWork: assignment.groupWork,
+              maxGroupSize: assignment.maxGroupSize ?? 4,
             }}
+            groupLocked={groupLocked}
           />
         </details>
         <div className="mt-10 flex flex-wrap items-center gap-6">

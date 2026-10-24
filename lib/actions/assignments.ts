@@ -29,15 +29,32 @@ const fieldsSchema = z.object({
     .string()
     .trim()
     .max(2000, "Keep the instructions under 2000 characters."),
+  groupWork: z.boolean(),
+  maxGroupSize: z.coerce
+    .number()
+    .int("Enter a whole number for the group size.")
+    .min(2, "A group needs at least 2 people.")
+    .max(10, "Keep groups to 10 people or fewer."),
 });
 
 function readFields(formData: FormData) {
+  const groupWork = formData.get("groupWork") === "on";
   return fieldsSchema.safeParse({
     title: formData.get("title") ?? "",
     kind: formData.get("kind") ?? "ASSIGNMENT",
     dueAt: formData.get("dueAt") ?? "",
     instructions: formData.get("instructions") ?? "",
+    groupWork,
+    // Only checked when the item is group work.
+    maxGroupSize: groupWork ? (formData.get("maxGroupSize") ?? "") : 2,
   });
+}
+
+function groupFields(data: { groupWork: boolean; maxGroupSize: number }) {
+  return {
+    groupWork: data.groupWork,
+    maxGroupSize: data.groupWork ? data.maxGroupSize : null,
+  };
 }
 
 const id = z.coerce.number().int().positive();
@@ -103,6 +120,7 @@ export async function createAssignment(
       kind,
       dueAt,
       instructions: instructions || null,
+      ...groupFields(parsed.data),
       createdAt: Date.now(),
     })
     .returning({ id: assignments.id })
@@ -138,9 +156,14 @@ export async function updateAssignment(
     return { ok: false, message: `This class already has “${title}”.` };
   }
 
+  // Group settings are fixed once anyone has started handing in, so no
+  // existing group falls outside them.
+  const group = (await hasSubmissions(db, current.id))
+    ? { groupWork: current.groupWork, maxGroupSize: current.maxGroupSize }
+    : groupFields(parsed.data);
   await db
     .update(assignments)
-    .set({ title, kind, dueAt, instructions: instructions || null })
+    .set({ title, kind, dueAt, instructions: instructions || null, ...group })
     .where(eq(assignments.id, current.id))
     .run();
   if (dueAt !== current.dueAt) await rejudgeLateness(db, current.id, dueAt);
