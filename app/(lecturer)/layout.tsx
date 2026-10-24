@@ -14,7 +14,7 @@ export default async function LecturerLayout({
       <header className="pointer-events-none sticky top-0 z-10 flex justify-center px-4 pt-4">
         <nav
           aria-label="Main"
-          className="pointer-events-auto flex h-11 items-center gap-1 rounded-full bg-surface/80 pr-1.5 pl-5 shadow-soft ring-1 ring-line backdrop-blur-xl"
+          className="pointer-events-auto flex h-11 items-center gap-1 rounded-full bg-surface pr-1.5 pl-5 shadow-soft ring-1 ring-line"
         >
           <Link
             href="/dashboard"

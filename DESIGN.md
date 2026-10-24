@@ -7,7 +7,7 @@ colors:
   sunken: "#eaede9"
   ink: "#0d1210"
   muted: "#56605a"
-  faint: "#8b948e"
+  faint: "#68716b"
   line: "rgb(13 18 16 / 0.09)"
   line-strong: "rgb(13 18 16 / 0.18)"
   accent: "#0c7a4a"
