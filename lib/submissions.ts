@@ -10,6 +10,7 @@ import {
   enrollments,
   students,
   submissionFiles,
+  submissionMembers,
   submissions,
 } from "@/lib/db/schema";
 import type { DriveIo } from "@/lib/google/drive";
@@ -32,6 +33,8 @@ export type SubmitCode =
   | "NO_ASSIGNMENT"
   | "CLOSED"
   | "ALREADY_SUBMITTED"
+  | "BAD_GROUP"
+  | "MEMBER_TAKEN"
   | "BAD_FILE"
   | "EXPIRED"
   | "UPLOAD_FAILED"
@@ -154,6 +157,57 @@ async function findEnrolledStudent(
   return student ?? "NOT_FOUND";
 }
 
+// Who among `studentRowIds` is already covered by a finished submission for
+// the item, with the name of whoever submitted for them.
+async function alreadyCovered(
+  db: Pick<Db, "select">,
+  assignmentId: number,
+  studentRowIds: number[],
+) {
+  if (studentRowIds.length === 0) return [];
+  const rows = await db
+    .select({
+      studentId: submissionMembers.studentId,
+      name: students.name,
+      submittedBy: submissions.studentId,
+    })
+    .from(submissionMembers)
+    .innerJoin(submissions, eq(submissions.id, submissionMembers.submissionId))
+    .innerJoin(students, eq(students.id, submissionMembers.studentId))
+    .where(
+      and(
+        eq(submissionMembers.assignmentId, assignmentId),
+        eq(submissions.status, "COMPLETE"),
+        inArray(submissionMembers.studentId, studentRowIds),
+      ),
+    )
+    .all();
+  const submitters = await namesOf(
+    db,
+    rows.map((r) => r.submittedBy),
+  );
+  return rows.map((r) => ({
+    ...r,
+    submittedByName: submitters.get(r.submittedBy) ?? "",
+  }));
+}
+
+async function namesOf(db: Pick<Db, "select">, ids: number[]) {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map<number, string>();
+  const rows = await db
+    .select({ id: students.id, name: students.name })
+    .from(students)
+    .where(inArray(students.id, unique))
+    .all();
+  return new Map(rows.map((r) => [r.id, r.name]));
+}
+
+function takenMessage(taken: { name: string; submittedByName: string }[]) {
+  const [first] = taken;
+  return `${first.name} has already been submitted for by ${first.submittedByName}.`;
+}
+
 export type StudentItem = {
   id: number;
   title: string;
@@ -161,7 +215,17 @@ export type StudentItem = {
   instructions: string | null;
   dueAt: number;
   open: boolean;
-  submission: { late: boolean; submittedAt: number; files: string[] } | null;
+  groupWork: boolean;
+  maxGroupSize: number | null;
+  submission: {
+    late: boolean;
+    submittedAt: number;
+    files: string[];
+    // Null when the student submitted it themselves.
+    submittedBy: string | null;
+    // Everyone the submission covers, the submitter first.
+    members: string[];
+  } | null;
 };
 
 export type LookupResult =
@@ -194,24 +258,32 @@ export async function lookupStudent(
       instructions: assignments.instructions,
       dueAt: assignments.dueAt,
       open: assignments.open,
+      groupWork: assignments.groupWork,
+      maxGroupSize: assignments.maxGroupSize,
     })
     .from(assignments)
     .where(eq(assignments.classId, input.classId))
     .orderBy(asc(assignments.dueAt), asc(assignments.id))
     .all();
 
+  // Through the members table, so work a group mate handed in counts.
   const done = items.length
     ? await db
         .select({
           submissionId: submissions.id,
           assignmentId: submissions.assignmentId,
+          submittedBy: submissions.studentId,
           late: submissions.late,
           submittedAt: submissions.submittedAt,
         })
-        .from(submissions)
+        .from(submissionMembers)
+        .innerJoin(
+          submissions,
+          eq(submissions.id, submissionMembers.submissionId),
+        )
         .where(
           and(
-            eq(submissions.studentId, student.id),
+            eq(submissionMembers.studentId, student.id),
             eq(submissions.status, "COMPLETE"),
             inArray(
               submissions.assignmentId,
@@ -237,6 +309,24 @@ export async function lookupStudent(
         .orderBy(asc(submissionFiles.id))
         .all()
     : [];
+  const members = done.length
+    ? await db
+        .select({
+          submissionId: submissionMembers.submissionId,
+          studentId: students.id,
+          name: students.name,
+        })
+        .from(submissionMembers)
+        .innerJoin(students, eq(students.id, submissionMembers.studentId))
+        .where(
+          inArray(
+            submissionMembers.submissionId,
+            done.map((d) => d.submissionId),
+          ),
+        )
+        .orderBy(asc(submissionMembers.id))
+        .all()
+    : [];
 
   return {
     code: "OK",
@@ -252,6 +342,17 @@ export async function lookupStudent(
               files: files
                 .filter((f) => f.submissionId === sub.submissionId)
                 .map((f) => f.name),
+              submittedBy:
+                sub.submittedBy === student.id
+                  ? null
+                  : (members.find(
+                      (m) =>
+                        m.submissionId === sub.submissionId &&
+                        m.studentId === sub.submittedBy,
+                    )?.name ?? null),
+              members: members
+                .filter((m) => m.submissionId === sub.submissionId)
+                .map((m) => m.name),
             }
           : null,
       };
@@ -259,10 +360,73 @@ export async function lookupStudent(
   };
 }
 
+export type MemberResult =
+  | { code: "OK"; member: { studentId: string; name: string } }
+  | {
+      code:
+        | "NOT_FOUND"
+        | "INVALID_ID"
+        | "RATE_LIMITED"
+        | "NO_ASSIGNMENT"
+        | "BAD_GROUP"
+        | "MEMBER_TAKEN";
+      message?: string;
+    };
+
+// A group mate the submitter is adding, checked as they type them in so
+// the name can be confirmed on screen. Checked again when they submit.
+export async function lookupMember(
+  db: Db,
+  input: {
+    classId: number;
+    assignmentId: number;
+    submitterRaw: string | null;
+    memberRaw: string | null;
+    ip: string;
+  },
+  now: number = Date.now(),
+): Promise<MemberResult> {
+  if (limited(input.ip, now)) return { code: "RATE_LIMITED" };
+  const assignment = await db
+    .select({ groupWork: assignments.groupWork })
+    .from(assignments)
+    .where(
+      and(
+        eq(assignments.id, input.assignmentId),
+        eq(assignments.classId, input.classId),
+      ),
+    )
+    .get();
+  if (!assignment) return { code: "NO_ASSIGNMENT" };
+  if (!assignment.groupWork) {
+    return { code: "BAD_GROUP", message: "This item is not group work." };
+  }
+  const member = await findEnrolledStudent(db, input.classId, input.memberRaw);
+  if (typeof member === "string") return { code: member };
+  const submitter = await findEnrolledStudent(
+    db,
+    input.classId,
+    input.submitterRaw,
+  );
+  if (typeof submitter !== "string" && submitter.id === member.id) {
+    return { code: "BAD_GROUP", message: "You're already in the group." };
+  }
+  const taken = await alreadyCovered(db, input.assignmentId, [member.id]);
+  if (taken.length) {
+    return { code: "MEMBER_TAKEN", message: takenMessage(taken) };
+  }
+  return {
+    code: "OK",
+    member: { studentId: member.studentId, name: member.name },
+  };
+}
+
 export type StartInput = {
   classId: number;
   studentIdRaw: string | null;
   assignmentId: number;
+  // Group mates' IDs as typed (last four digits), not the submitter's.
+  memberIdsRaw?: string[];
   files: FileMeta[];
   origin: string;
   ip: string;
@@ -278,6 +442,52 @@ export type StartResult =
       uploads: { fileId: number; uploadUrl: string }[];
     }
   | { code: Exclude<SubmitCode, "OK">; message?: string };
+
+// The submitter's group mates, each checked: in the class, listed once, not
+// the submitter, within the size limit and not already handed in for.
+async function resolveGroup(
+  db: Db,
+  assignment: { id: number; groupWork: boolean; maxGroupSize: number | null },
+  submitter: EnrolledStudent,
+  input: StartInput,
+): Promise<EnrolledStudent[] | { code: "BAD_GROUP" | "MEMBER_TAKEN"; message: string }> {
+  const raws = (input.memberIdsRaw ?? []).slice(0, 50);
+  if (raws.length === 0) return [];
+  if (!assignment.groupWork) {
+    return { code: "BAD_GROUP", message: "This item is not group work." };
+  }
+  const max = assignment.maxGroupSize ?? Infinity;
+  if (raws.length + 1 > max) {
+    return {
+      code: "BAD_GROUP",
+      message: `Groups for this item are at most ${max}, including you.`,
+    };
+  }
+  const members: EnrolledStudent[] = [];
+  for (const raw of raws) {
+    const found = await findEnrolledStudent(db, input.classId, raw);
+    if (typeof found === "string") {
+      return {
+        code: "BAD_GROUP",
+        message: `No student with the ID ending ${raw} is in this class.`,
+      };
+    }
+    if (found.id === submitter.id) {
+      return { code: "BAD_GROUP", message: "You're already in the group." };
+    }
+    if (members.some((m) => m.id === found.id)) {
+      return { code: "BAD_GROUP", message: `${found.name} is listed twice.` };
+    }
+    members.push(found);
+  }
+  const taken = await alreadyCovered(
+    db,
+    assignment.id,
+    members.map((m) => m.id),
+  );
+  if (taken.length) return { code: "MEMBER_TAKEN", message: takenMessage(taken) };
+  return members;
+}
 
 export async function startSubmission(
   db: Db,
@@ -307,17 +517,14 @@ export async function startSubmission(
   if (!assignment) return { code: "NO_ASSIGNMENT" };
   if (!assignment.open) return { code: "CLOSED" };
 
-  const existing = await db
-    .select({ status: submissions.status })
-    .from(submissions)
-    .where(
-      and(
-        eq(submissions.assignmentId, assignment.id),
-        eq(submissions.studentId, student.id),
-      ),
-    )
-    .get();
-  if (existing?.status === "COMPLETE") return { code: "ALREADY_SUBMITTED" };
+  // Covers a group mate having submitted for them, too.
+  if ((await alreadyCovered(db, assignment.id, [student.id])).length) {
+    return { code: "ALREADY_SUBMITTED" };
+  }
+
+  const group = await resolveGroup(db, assignment, student, input);
+  if ("code" in group) return group;
+  const memberIds = [student.id, ...group.map((m) => m.id)];
 
   const problem = checkFiles(input.files);
   if (problem) return { code: "BAD_FILE", message: problem };
@@ -383,6 +590,20 @@ export async function startSubmission(
       .delete(submissionFiles)
       .where(eq(submissionFiles.submissionId, row.id))
       .run();
+    await tx
+      .delete(submissionMembers)
+      .where(eq(submissionMembers.submissionId, row.id))
+      .run();
+    await tx
+      .insert(submissionMembers)
+      .values(
+        memberIds.map((studentId) => ({
+          submissionId: row.id,
+          assignmentId: assignment.id,
+          studentId,
+        })),
+      )
+      .run();
     const fileRows = await tx
       .insert(submissionFiles)
       .values(planned.map((file) => ({ submissionId: row.id, ...file })))
@@ -418,8 +639,21 @@ export type CompleteResult =
       late: boolean;
       submittedAt: number;
       files: string[];
+      // Everyone the submission covers, the submitter first.
+      members: string[];
     }
   | { code: Exclude<SubmitCode, "OK">; message?: string };
+
+async function memberNames(db: Db, submissionId: number) {
+  const rows = await db
+    .select({ name: students.name })
+    .from(submissionMembers)
+    .innerJoin(students, eq(students.id, submissionMembers.studentId))
+    .where(eq(submissionMembers.submissionId, submissionId))
+    .orderBy(asc(submissionMembers.id))
+    .all();
+  return rows.map((r) => r.name);
+}
 
 export async function completeSubmission(
   db: Db,
@@ -463,6 +697,7 @@ export async function completeSubmission(
       late: sub.late,
       submittedAt: sub.submittedAt ?? now,
       files: names,
+      members: await memberNames(db, sub.id),
     };
   }
   if (now - sub.startedAt > UPLOAD_WINDOW_MS) return { code: "EXPIRED" };
@@ -501,6 +736,20 @@ export async function completeSubmission(
   }
 
   const completed = await db.transaction(async (tx) => {
+    // A group mate may have submitted for someone here since this upload
+    // started. The transaction holds the write lock, so this check and the
+    // update below can't interleave with another completion.
+    const covering = await tx
+      .select({ studentId: submissionMembers.studentId })
+      .from(submissionMembers)
+      .where(eq(submissionMembers.submissionId, sub.id))
+      .all();
+    const taken = await alreadyCovered(
+      tx,
+      sub.assignmentId,
+      covering.map((m) => m.studentId),
+    );
+    if (taken.length) return { taken };
     const result = await tx
       .update(submissions)
       .set({ status: "COMPLETE", submittedAt: now })
@@ -522,6 +771,9 @@ export async function completeSubmission(
     }
     return true;
   });
+  if (typeof completed === "object") {
+    return { code: "MEMBER_TAKEN", message: takenMessage(completed.taken) };
+  }
   if (!completed) {
     // Another request finished it first, or a newer start took it over.
     const latest = await db
@@ -540,6 +792,7 @@ export async function completeSubmission(
     late: sub.late,
     submittedAt: now,
     files: names,
+    members: await memberNames(db, sub.id),
   };
 }
 

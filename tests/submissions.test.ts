@@ -319,3 +319,184 @@ describe("getClassSubmissionMatrix", () => {
     expect(matrix.students[0].cells[assignmentId]).toMatchObject({ late: false });
   });
 });
+
+describe("group work", () => {
+  let projectId: number;
+  const ids: Record<string, number> = {};
+
+  beforeEach(async () => {
+    for (const [studentId, name] of [
+      ["905004444", "Bob Kamara"],
+      ["905005555", "Cara Sesay"],
+      ["905006666", "Dan Koroma"],
+    ]) {
+      const id = (
+        await db.insert(students).values({ studentId, name }).returning().get()
+      ).id;
+      await db.insert(enrollments).values({ classId, studentId: id }).run();
+      ids[name] = id;
+    }
+    projectId = (
+      await db
+        .insert(assignments)
+        .values({
+          classId,
+          title: "Group project",
+          kind: "PROJECT",
+          groupWork: true,
+          maxGroupSize: 3,
+          dueAt: NOW + DAY,
+          createdAt: NOW,
+        })
+        .returning()
+        .get()
+    ).id;
+  });
+
+  async function groupSubmit(submitter: string, members: string[], now = NOW) {
+    const started = await start(
+      { studentIdRaw: submitter, assignmentId: projectId, memberIdsRaw: members },
+      now,
+    );
+    if (started.code !== "OK") return started;
+    const uploads = started.uploads.map((u) => ({
+      fileId: u.fileId,
+      driveFileId: drive.upload(u.uploadUrl),
+    }));
+    return completeSubmission(
+      db,
+      drive.io,
+      { submissionId: started.submissionId, token: started.token, uploads, ip },
+      now + 1000,
+    );
+  }
+
+  it("marks every member as submitted from one submission", async () => {
+    const done = await groupSubmit("1111", ["4444", "5555"]);
+    expect(done).toMatchObject({
+      code: "OK",
+      members: ["Ada Lovelace", "Bob Kamara", "Cara Sesay"],
+    });
+
+    const bob = await lookupStudent(db, { classId, studentIdRaw: "4444", ip });
+    if (bob.code !== "OK") throw new Error(bob.code);
+    expect(bob.items.find((i) => i.id === projectId)?.submission).toMatchObject({
+      submittedBy: "Ada Lovelace",
+      members: ["Ada Lovelace", "Bob Kamara", "Cara Sesay"],
+      files: ["essay.pdf"],
+    });
+    const ada = await lookupStudent(db, { classId, studentIdRaw: "1111", ip });
+    if (ada.code !== "OK") throw new Error(ada.code);
+    expect(ada.items.find((i) => i.id === projectId)?.submission?.submittedBy).toBeNull();
+
+    // Bob can't hand in again for the group.
+    expect((await start({ studentIdRaw: "4444", assignmentId: projectId })).code).toBe(
+      "ALREADY_SUBMITTED",
+    );
+  });
+
+  it("counts members on the lecturer pages and in the sheet", async () => {
+    const { getAssignmentDetail, getClassAssignments, getClassSubmissionMatrix } =
+      await import("@/lib/data/assignments");
+    const { loadSubmissionsGrid } = await import("@/lib/sheets/submissions");
+    await groupSubmit("1111", ["4444"]);
+
+    const item = (await getClassAssignments(db, classId)).find((i) => i.id === projectId);
+    expect(item?.submitted).toBe(2);
+
+    const detail = await getAssignmentDetail(db, projectId);
+    const byName = Object.fromEntries(
+      detail!.roster.map((e) => [e.name, e.submission]),
+    );
+    expect(byName["Ada Lovelace"]).toMatchObject({ submittedBy: null, groupmates: ["Bob Kamara"] });
+    expect(byName["Bob Kamara"]).toMatchObject({
+      submittedBy: "Ada Lovelace",
+      groupmates: ["Ada Lovelace"],
+      files: [{ name: "essay.pdf" }],
+    });
+    expect(byName["Cara Sesay"]).toBeNull();
+
+    const matrix = await getClassSubmissionMatrix(db, classId);
+    expect(
+      matrix.items.find((i) => i.id === projectId)?.missing.map((s) => s.name),
+    ).toEqual(["Cara Sesay", "Dan Koroma"]);
+
+    const grid = await loadSubmissionsGrid(db, classId);
+    expect(grid.cells.get(`${ids["Bob Kamara"]}:${projectId}`)).toMatchObject({ late: false });
+    expect(grid.cells.get(`${ids["Cara Sesay"]}:${projectId}`)).toBeUndefined();
+  });
+
+  it("refuses groups that break the rules", async () => {
+    const code = async (submitter: string, members: string[]) => {
+      const r = await start({ studentIdRaw: submitter, assignmentId: projectId, memberIdsRaw: members });
+      return r.code === "OK" ? "OK" : `${r.code}: ${r.message ?? ""}`;
+    };
+    expect(await code("1111", ["4444", "5555", "6666"])).toMatch(/^BAD_GROUP: .*at most 3/);
+    expect(await code("1111", ["3333"])).toMatch(/^BAD_GROUP: .*ending 3333/);
+    expect(await code("1111", ["2222"])).toMatch(/^BAD_GROUP/); // left the class
+    expect(await code("1111", ["1111"])).toMatch(/^BAD_GROUP: You're already/);
+    expect(await code("1111", ["4444", "4444"])).toMatch(/^BAD_GROUP: Bob Kamara is listed twice/);
+    // Members on individual work.
+    const r = await start({ memberIdsRaw: ["4444"] });
+    expect(r.code).toBe("BAD_GROUP");
+  });
+
+  it("won't put someone in two groups", async () => {
+    await groupSubmit("1111", ["4444"]);
+    const again = await groupSubmit("5555", ["4444"]);
+    expect(again).toMatchObject({
+      code: "MEMBER_TAKEN",
+      message: "Bob Kamara has already been submitted for by Ada Lovelace.",
+    });
+  });
+
+  it("stops the second of two overlapping groups at confirmation", async () => {
+    const first = await start({ studentIdRaw: "1111", assignmentId: projectId, memberIdsRaw: ["4444"] });
+    const second = await start({ studentIdRaw: "5555", assignmentId: projectId, memberIdsRaw: ["4444"] });
+    if (first.code !== "OK" || second.code !== "OK") throw new Error("start failed");
+    const finish = (s: typeof first) =>
+      completeSubmission(
+        db,
+        drive.io,
+        {
+          submissionId: s.submissionId,
+          token: s.token,
+          uploads: s.uploads.map((u) => ({ fileId: u.fileId, driveFileId: drive.upload(u.uploadUrl) })),
+          ip,
+        },
+        NOW + 1000,
+      );
+    expect((await finish(first)).code).toBe("OK");
+    expect((await finish(second)).code).toBe("MEMBER_TAKEN");
+    // Cara is still free to hand in with someone else.
+    expect((await groupSubmit("5555", ["6666"])).code).toBe("OK");
+  });
+
+  it("looks up a group mate's name as they're added", async () => {
+    const { lookupMember } = await import("@/lib/submissions");
+    const look = (memberRaw: string, target = projectId) =>
+      lookupMember(db, { classId, assignmentId: target, submitterRaw: "1111", memberRaw, ip });
+    expect(await look("4444")).toEqual({
+      code: "OK",
+      member: { studentId: "905004444", name: "Bob Kamara" },
+    });
+    expect((await look("1111")).code).toBe("BAD_GROUP");
+    expect((await look("3333")).code).toBe("NOT_FOUND");
+    expect((await look("4444", assignmentId)).code).toBe("BAD_GROUP");
+    await groupSubmit("5555", ["4444"]);
+    expect(await look("4444")).toMatchObject({ code: "MEMBER_TAKEN" });
+  });
+});
+
+describe("submission members", () => {
+  it("are written for every submission, and backfilled for older ones", async () => {
+    const { submissionMembers } = await import("@/lib/db/schema");
+    await submitOk();
+    const rows = await db.select().from(submissionMembers).all();
+    expect(rows).toHaveLength(1);
+    // The backfill itself runs in the migration; check its SQL covers it.
+    const fs = await import("node:fs");
+    const sqlText = fs.readFileSync("drizzle/0002_melted_starjammers.sql", "utf8");
+    expect(sqlText).toMatch(/INSERT INTO `submission_members`.*SELECT `id`, `assignment_id`, `student_id` FROM `submissions`/);
+  });
+});

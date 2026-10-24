@@ -9,6 +9,7 @@ import {
   classes,
   enrollments,
   students,
+  submissionMembers,
   submissions,
 } from "@/lib/db/schema";
 import { formatStamp } from "@/lib/timezone";
@@ -57,18 +58,24 @@ export async function loadSubmissionsGrid(
     .all();
   const done = columns.length
     ? await db
+        // Every student a submission covers, so a group's members all
+        // get the cell filled.
         .select({
-          studentId: submissions.studentId,
-          assignmentId: submissions.assignmentId,
+          studentId: submissionMembers.studentId,
+          assignmentId: submissionMembers.assignmentId,
           late: submissions.late,
           submittedAt: submissions.submittedAt,
         })
-        .from(submissions)
+        .from(submissionMembers)
+        .innerJoin(
+          submissions,
+          eq(submissions.id, submissionMembers.submissionId),
+        )
         .where(
           and(
             eq(submissions.status, "COMPLETE"),
             inArray(
-              submissions.assignmentId,
+              submissionMembers.assignmentId,
               columns.map((c) => c.id),
             ),
           ),

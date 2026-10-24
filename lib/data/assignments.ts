@@ -6,8 +6,25 @@ import {
   enrollments,
   students,
   submissionFiles,
+  submissionMembers,
   submissions,
 } from "@/lib/db/schema";
+
+// A student counts as having handed in when a COMPLETE submission covers
+// them: their own, or a group mate's that lists them.
+function covered(db: Db) {
+  return db
+    .select({
+      submissionId: submissions.id,
+      assignmentId: submissionMembers.assignmentId,
+      studentId: submissionMembers.studentId,
+      submittedBy: submissions.studentId,
+      late: submissions.late,
+      submittedAt: submissions.submittedAt,
+    })
+    .from(submissionMembers)
+    .innerJoin(submissions, eq(submissions.id, submissionMembers.submissionId));
+}
 
 // Every item set for a class, with how many have been handed in.
 export async function getClassAssignments(db: Db, classId: number) {
@@ -17,24 +34,29 @@ export async function getClassAssignments(db: Db, classId: number) {
     .where(eq(assignments.classId, classId))
     .orderBy(asc(assignments.dueAt), asc(assignments.id))
     .all();
+  // Students handed in for, not submissions: a group of four counts four.
   const counts = rows.length
     ? await db
         .select({
-          assignmentId: submissions.assignmentId,
+          assignmentId: submissionMembers.assignmentId,
           submitted: count(),
           late: sql<number>`sum(${submissions.late})`,
         })
-        .from(submissions)
+        .from(submissionMembers)
+        .innerJoin(
+          submissions,
+          eq(submissions.id, submissionMembers.submissionId),
+        )
         .where(
           and(
             eq(submissions.status, "COMPLETE"),
             inArray(
-              submissions.assignmentId,
+              submissionMembers.assignmentId,
               rows.map((r) => r.id),
             ),
           ),
         )
-        .groupBy(submissions.assignmentId)
+        .groupBy(submissionMembers.assignmentId)
         .all()
     : [];
   return rows.map((row) => {
@@ -52,6 +74,10 @@ export type RosterEntry = {
     late: boolean;
     submittedAt: number;
     files: { name: string; driveFileId: string; size: number }[];
+    // Group work: who submitted, when it wasn't this student, and the
+    // others the same submission covers.
+    submittedBy: string | null;
+    groupmates: string[];
   } | null;
 };
 
@@ -70,22 +96,16 @@ export async function getAssignmentDetail(db: Db, assignmentId: number) {
     .get();
   if (!row) return null;
 
-  const done = await db
-    .select({
-      id: submissions.id,
-      studentId: submissions.studentId,
-      late: submissions.late,
-      submittedAt: submissions.submittedAt,
-    })
-    .from(submissions)
+  const done = await covered(db)
     .where(
       and(
-        eq(submissions.assignmentId, assignmentId),
+        eq(submissionMembers.assignmentId, assignmentId),
         eq(submissions.status, "COMPLETE"),
       ),
     )
     .all();
-  const files = done.length
+  const submissionIds = [...new Set(done.map((d) => d.submissionId))];
+  const files = submissionIds.length
     ? await db
         .select({
           submissionId: submissionFiles.submissionId,
@@ -95,10 +115,7 @@ export async function getAssignmentDetail(db: Db, assignmentId: number) {
         })
         .from(submissionFiles)
         .where(
-          inArray(
-            submissionFiles.submissionId,
-            done.map((d) => d.id),
-          ),
+          inArray(submissionFiles.submissionId, submissionIds),
         )
         .orderBy(asc(submissionFiles.id))
         .all()
@@ -130,6 +147,7 @@ export async function getAssignmentDetail(db: Db, assignmentId: number) {
     .orderBy(asc(students.name))
     .all();
 
+  const names = new Map(roster.map((s) => [s.id, s.name]));
   const entries: RosterEntry[] = roster.map((s) => {
     const sub = done.find((d) => d.studentId === s.id);
     return {
@@ -138,8 +156,18 @@ export async function getAssignmentDetail(db: Db, assignmentId: number) {
         ? {
             late: sub.late,
             submittedAt: sub.submittedAt ?? 0,
+            submittedBy:
+              sub.submittedBy === s.id
+                ? null
+                : (names.get(sub.submittedBy) ?? null),
+            groupmates: done
+              .filter(
+                (d) => d.submissionId === sub.submissionId && d.studentId !== s.id,
+              )
+              .map((d) => names.get(d.studentId) ?? "")
+              .filter(Boolean),
             files: files
-              .filter((f) => f.submissionId === sub.id && f.driveFileId)
+              .filter((f) => f.submissionId === sub.submissionId && f.driveFileId)
               .map((f) => ({
                 name: f.name,
                 driveFileId: f.driveFileId as string,
@@ -182,19 +210,12 @@ export async function getClassSubmissionMatrix(db: Db, classId: number) {
     .all();
 
   const done = items.length
-    ? await db
-        .select({
-          studentId: submissions.studentId,
-          assignmentId: submissions.assignmentId,
-          late: submissions.late,
-          submittedAt: submissions.submittedAt,
-        })
-        .from(submissions)
+    ? await covered(db)
         .where(
           and(
             eq(submissions.status, "COMPLETE"),
             inArray(
-              submissions.assignmentId,
+              submissionMembers.assignmentId,
               items.map((i) => i.id),
             ),
           ),
