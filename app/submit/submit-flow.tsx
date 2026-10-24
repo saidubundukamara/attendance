@@ -6,6 +6,7 @@ import { ConfirmButton } from "@/components/ui/confirm-button";
 import { inputClass, Label } from "@/components/ui/field";
 import { ArrowLeft, Check, Clock, Cross } from "@/components/ui/icons";
 import { Notice } from "@/components/ui/notice";
+import { RichText } from "@/components/ui/rich-text";
 import { STUDENT_ID_PREFIX } from "@/lib/student-id";
 import {
   ACCEPT_ATTRIBUTE,
@@ -503,7 +504,7 @@ export function SubmitFlow({
       </h2>
       <DeadlinePanel dueAt={item.dueAt} now={now} timeZone={timeZone} />
       {item.instructions && (
-        <p className="mt-5 whitespace-pre-line text-sm">{item.instructions}</p>
+        <RichText text={item.instructions} className="mt-5 text-sm" />
       )}
 
       <div className="mt-6">

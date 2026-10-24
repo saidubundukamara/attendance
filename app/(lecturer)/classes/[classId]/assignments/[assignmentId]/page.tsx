@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { BackLink } from "@/components/ui/back-link";
+import { ArrowRight } from "@/components/ui/icons";
 import { Notice } from "@/components/ui/notice";
+import { RichText } from "@/components/ui/rich-text";
 import { requireLecturer } from "@/lib/auth";
 import { getAssignmentDetail, type RosterEntry } from "@/lib/data/assignments";
 import { db } from "@/lib/db";
@@ -109,6 +111,19 @@ export default async function AssignmentPage({
           timeZone={timeZone}
           quick={quick}
         />
+        {assignment.instructions && (
+          // Folded so long instructions don't push the roster down.
+          <details className="group mt-3">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-sm font-medium text-muted transition-colors duration-200 hover:text-ink [&::-webkit-details-marker]:hidden">
+              <ArrowRight className="size-3 transition-transform duration-200 group-open:rotate-90" />
+              Instructions students see
+            </summary>
+            <RichText
+              text={assignment.instructions}
+              className="mt-3 rounded-2xl bg-surface p-4 text-sm ring-1 ring-line"
+            />
+          </details>
+        )}
       </div>
 
       <div

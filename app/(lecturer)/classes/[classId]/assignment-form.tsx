@@ -95,11 +95,16 @@ export function AssignmentForm({
         <textarea
           id={`${prefix}-instructions`}
           name="instructions"
-          rows={3}
+          rows={6}
           maxLength={2000}
+          aria-describedby={`${prefix}-instructions-hint`}
           defaultValue={values.instructions}
           className={`${inputClass} h-auto w-full py-2.5`}
         />
+        <p id={`${prefix}-instructions-hint`} className="mt-1.5 text-xs text-muted">
+          Paste from Word or type freely. **Bold**, *italic*, numbered and
+          bulleted lists show formatted to students.
+        </p>
       </div>
       <div className="flex flex-wrap items-center gap-4 sm:col-span-2">
         <Button type="submit" size="lg" className="h-11" disabled={pending}>
