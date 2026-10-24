@@ -108,3 +108,38 @@ export function relativeToNow(ms: number, now: number): string {
         : `${days} days`;
   return diff >= 0 ? `in ${amount}` : `${amount} ago`;
 }
+
+export type Urgency = "passed" | "today" | "soon" | "later";
+
+// The countdown students see next to a deadline: "2 days 5 h left",
+// "45 min left", "Deadline passed 3 hours ago". Under a day it is "today";
+// under three days, "soon".
+export function timeLeft(
+  dueAt: number,
+  now: number,
+): { text: string; urgency: Urgency } {
+  const diff = dueAt - now;
+  if (diff <= 0) {
+    return {
+      text: `Deadline passed ${relativeToNow(dueAt, now)}`,
+      urgency: "passed",
+    };
+  }
+  const minutes = Math.max(1, Math.floor(diff / 60_000));
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (hours < 1) return { text: `${minutes} min left`, urgency: "today" };
+  if (days < 1) {
+    const m = minutes % 60;
+    return {
+      text: m ? `${hours} h ${m} min left` : `${hours} h left`,
+      urgency: "today",
+    };
+  }
+  const h = hours % 24;
+  const dayText = `${days} ${days === 1 ? "day" : "days"}`;
+  if (days < 3) {
+    return { text: h ? `${dayText} ${h} h left` : `${dayText} left`, urgency: "soon" };
+  }
+  return { text: `${dayText} left`, urgency: "later" };
+}
