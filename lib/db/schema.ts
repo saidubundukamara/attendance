@@ -21,6 +21,10 @@ export const classes = sqliteTable("classes", {
   startDate: text("start_date"),
   totalWeeks: integer("total_weeks").notNull().default(15),
   lastSyncedAt: integer("last_synced_at"),
+  // Drive folder holding this class's assignment folders; created on first use.
+  driveFolderId: text("drive_folder_id"),
+  // Last failure writing the "Subs of <CODE>" tab; null once it succeeds.
+  submissionsSheetError: text("submissions_sheet_error"),
 });
 
 export const students = sqliteTable("students", {
@@ -150,4 +154,79 @@ export const syncJobs = sqliteTable(
     doneAt: integer("done_at"),
   },
   (t) => [index("sync_jobs_status_idx").on(t.status, t.classId)],
+);
+
+// Something students hand in: an assignment, a piece of classwork or a project.
+export const assignments = sqliteTable(
+  "assignments",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    classId: integer("class_id")
+      .notNull()
+      .references(() => classes.id),
+    // Also the column header in the class's submissions tab.
+    title: text("title").notNull(),
+    kind: text("kind", { enum: ["ASSIGNMENT", "CLASSWORK", "PROJECT"] })
+      .notNull()
+      .default("ASSIGNMENT"),
+    instructions: text("instructions"),
+    dueAt: integer("due_at").notNull(),
+    // Closed items accept no new submissions, late or not.
+    open: integer("open", { mode: "boolean" }).notNull().default(true),
+    // Created on first use; files land in <root>/<class>/<title>/.
+    driveFolderId: text("drive_folder_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("assignments_class_title_uq").on(t.classId, t.title)],
+);
+
+// One per student per assignment. PENDING while the files are uploading
+// straight to Drive; COMPLETE once they have all been checked, after which
+// the student cannot submit again.
+export const submissions = sqliteTable(
+  "submissions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    assignmentId: integer("assignment_id")
+      .notNull()
+      .references(() => assignments.id),
+    studentId: integer("student_id")
+      .notNull()
+      .references(() => students.id),
+    status: text("status", { enum: ["PENDING", "COMPLETE"] }).notNull(),
+    // Random secret handed to the browser that started the upload; only it
+    // can complete the submission.
+    uploadToken: text("upload_token").notNull(),
+    // Lateness is judged by when the upload started, so a slow connection
+    // near the deadline is not penalised.
+    startedAt: integer("started_at").notNull(),
+    late: integer("late", { mode: "boolean" }).notNull().default(false),
+    submittedAt: integer("submitted_at"),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+  },
+  (t) => [
+    uniqueIndex("submissions_assignment_student_uq").on(
+      t.assignmentId,
+      t.studentId,
+    ),
+  ],
+);
+
+export const submissionFiles = sqliteTable(
+  "submission_files",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    submissionId: integer("submission_id")
+      .notNull()
+      .references(() => submissions.id),
+    // The name the student's file had, and the name it was given in Drive.
+    originalName: text("original_name").notNull(),
+    driveName: text("drive_name").notNull(),
+    mime: text("mime").notNull(),
+    size: integer("size").notNull(),
+    // Null until the upload is confirmed.
+    driveFileId: text("drive_file_id"),
+  },
+  (t) => [index("submission_files_submission_idx").on(t.submissionId)],
 );

@@ -88,3 +88,51 @@ export async function writeCells(cells: CellWrite[]): Promise<void> {
     },
   });
 }
+
+// Adds a tab with a frozen header row unless one with that title exists.
+export async function ensureTab(title: string): Promise<void> {
+  const sheets = getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets.properties.title",
+  });
+  const exists = (res.data.sheets ?? []).some(
+    (sheet) => sheet.properties?.title === title,
+  );
+  if (exists) return;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          addSheet: {
+            properties: {
+              title,
+              gridProperties: { frozenRowCount: 1, frozenColumnCount: 2 },
+            },
+          },
+        },
+      ],
+    },
+  });
+}
+
+// Clears the tab and writes `values` from A1. Only for tabs the app owns.
+export async function replaceTabValues(
+  title: string,
+  values: string[][],
+): Promise<void> {
+  const sheets = getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId,
+    range: tabRange(title),
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${tabRange(title)}!A1`,
+    valueInputOption: "RAW",
+    requestBody: { values },
+  });
+}

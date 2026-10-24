@@ -1,7 +1,15 @@
 import { db } from "@/lib/db";
-import { fetchTabValues, listAttendanceTabs, writeCells } from "./client";
+import { appTimeZone } from "@/lib/timezone";
+import {
+  ensureTab,
+  fetchTabValues,
+  listAttendanceTabs,
+  replaceTabValues,
+  writeCells,
+} from "./client";
 import { parseAttendanceTab } from "./parse";
 import { applyRoster, type RosterSyncReport } from "./roster";
+import { writeSubmissionsTab } from "./submissions";
 import { processSyncJobs, type SyncSummary } from "./write";
 
 // Reads every "Attn of ..." tab from the Google Sheet and updates the roster.
@@ -66,5 +74,48 @@ export function retrySheetSync(): Promise<SyncSummary> {
     db,
     { fetchTabValues, writeCells },
     { includeExhausted: true },
+  );
+}
+
+const globalForSubs = globalThis as unknown as {
+  __submissionsSync?: { running: boolean; classIds: Set<number> };
+};
+const subsState = (globalForSubs.__submissionsSync ??= {
+  running: false,
+  classIds: new Set<number>(),
+});
+
+// Rewrites a class's "Subs of <CODE>" tab in the background. Submissions
+// near a deadline arrive together, so calls in quick succession share a run.
+export async function scheduleSubmissionsSync(classId: number): Promise<void> {
+  subsState.classIds.add(classId);
+  if (subsState.running) return;
+  subsState.running = true;
+  try {
+    while (subsState.classIds.size > 0) {
+      await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+      const ids = [...subsState.classIds];
+      subsState.classIds.clear();
+      for (const id of ids) {
+        try {
+          await syncSubmissionsTab(id);
+        } catch (error) {
+          // Recorded on the class and shown to the lecturer.
+          console.error("Submissions sheet sync failed", error);
+        }
+      }
+    }
+  } finally {
+    subsState.running = false;
+  }
+}
+
+// Immediate rewrite, for the lecturer's "Update sheet" button.
+export function syncSubmissionsTab(classId: number): Promise<void> {
+  return writeSubmissionsTab(
+    db,
+    { ensureTab, replaceTabValues },
+    classId,
+    appTimeZone(),
   );
 }
