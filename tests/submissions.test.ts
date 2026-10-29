@@ -152,7 +152,7 @@ describe("file rules", () => {
     expect(checkFiles([{ name: "a.pdf", size: 1, type: "image/png" }])).toMatch(/real/);
     expect(checkFiles([{ name: "a.pdf", size: 0, type: "application/pdf" }])).toMatch(/empty/);
     expect(
-      checkFiles([{ name: "a.pdf", size: 51 * 1024 * 1024, type: "application/pdf" }]),
+      checkFiles([{ name: "a.pdf", size: 201 * 1024 * 1024, type: "application/pdf" }]),
     ).toMatch(/larger/);
     expect(checkFiles([])).toMatch(/at least one/);
     expect(checkFiles(Array(6).fill(PDF))).toMatch(/up to 5/);

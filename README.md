@@ -174,7 +174,7 @@ On a class page, under **Assignments**, press **New item** and give it a title (
 
 Students go to `<APP_URL>/submit`, choose their class, type the last four digits of their ID, pick the item and upload their files.
 
-- **Files:** PDF, Word (`.docx`) or ZIP, up to 5 files of 50 MB each per submission. The files go from the student's browser straight to Google Drive, so Vercel's 4.5 MB request limit does not apply.
+- **Files:** PDF, Word (`.docx`) or ZIP, up to 5 files of 200 MB each per submission. The files go from the student's browser straight to Google Drive, so Vercel's 4.5 MB request limit does not apply.
 - **One submission per item.** Once it is in, the student cannot replace it. The page tells them this before they submit.
 - **Late work** is accepted and marked `LATE`. The student is warned before uploading and told again on the confirmation. Lateness is judged by when the upload started. Moving the deadline re-checks every submission. **Close submissions** stops all further uploads.
 - **In Drive** the files are stored as `<root folder>/<CODE - module>/<item title>/<ID> - <Name> - <file name>`.

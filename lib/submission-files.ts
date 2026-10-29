@@ -9,7 +9,7 @@ export const ALLOWED_TYPES = {
 export type AllowedExtension = keyof typeof ALLOWED_TYPES;
 export const ACCEPT_ATTRIBUTE = ".pdf,.docx,.zip";
 export const MAX_FILES = 5;
-export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+export const MAX_FILE_BYTES = 200 * 1024 * 1024;
 // Browsers report these types for the same files, depending on the OS.
 const ACCEPTED_MIMES: Record<AllowedExtension, string[]> = {
   pdf: ["application/pdf", "application/x-pdf"],
