@@ -560,10 +560,38 @@ export async function startSubmission(
   }
 
   const token = randomUUID();
-  const late = now > assignment.dueAt;
   const userAgent = input.userAgent.slice(0, 300);
 
-  const saved = await db.transaction(async (tx) => {
+  type Saved =
+    | { code: Exclude<SubmitCode, "OK">; message?: string }
+    | { code: "OK"; submissionId: number; late: boolean; fileIds: number[] };
+  const saved = await db.transaction(async (tx): Promise<Saved> => {
+    // The lecturer may have closed, deleted or changed the item while Drive
+    // was being set up. The transaction holds the write lock, so the item
+    // read here is the one the row is saved against.
+    const fresh = await tx
+      .select({
+        open: assignments.open,
+        dueAt: assignments.dueAt,
+        groupWork: assignments.groupWork,
+        maxGroupSize: assignments.maxGroupSize,
+      })
+      .from(assignments)
+      .where(eq(assignments.id, assignment.id))
+      .get();
+    if (!fresh) return { code: "NO_ASSIGNMENT" };
+    if (!fresh.open) return { code: "CLOSED" };
+    if (group.length > 0 && !fresh.groupWork) {
+      return { code: "BAD_GROUP", message: "This item is not group work." };
+    }
+    if (memberIds.length > (fresh.maxGroupSize ?? Infinity)) {
+      return {
+        code: "BAD_GROUP",
+        message: `Groups for this item are at most ${fresh.maxGroupSize}, including you.`,
+      };
+    }
+    const late = now > fresh.dueAt;
+
     // A PENDING row from an earlier, unfinished try is taken over; a
     // COMPLETE one is left alone and nothing comes back.
     const row = await tx
@@ -585,7 +613,7 @@ export async function startSubmission(
       })
       .returning({ id: submissions.id })
       .get();
-    if (!row) return null;
+    if (!row) return { code: "ALREADY_SUBMITTED" };
     await tx
       .delete(submissionFiles)
       .where(eq(submissionFiles.submissionId, row.id))
@@ -609,15 +637,20 @@ export async function startSubmission(
       .values(planned.map((file) => ({ submissionId: row.id, ...file })))
       .returning({ id: submissionFiles.id })
       .all();
-    return { submissionId: row.id, fileIds: fileRows.map((f) => f.id) };
+    return {
+      code: "OK",
+      submissionId: row.id,
+      late,
+      fileIds: fileRows.map((f) => f.id),
+    };
   });
-  if (!saved) return { code: "ALREADY_SUBMITTED" };
+  if (saved.code !== "OK") return saved;
 
   return {
     code: "OK",
     submissionId: saved.submissionId,
     token,
-    late,
+    late: saved.late,
     uploads: saved.fileIds.map((fileId, i) => ({
       fileId,
       uploadUrl: uploadUrls[i],
@@ -797,15 +830,18 @@ export async function completeSubmission(
 }
 
 // Lateness follows the deadline: moving it re-judges every submission
-// against when its upload started.
+// against when its upload started. Reads the stored deadline in the same
+// statement, so overlapping deadline changes can't leave it judged against
+// one that was since replaced.
 export async function rejudgeLateness(
-  db: Db,
+  db: Pick<Db, "update">,
   assignmentId: number,
-  dueAt: number,
 ): Promise<void> {
   await db
     .update(submissions)
-    .set({ late: sql`${submissions.startedAt} > ${dueAt}` })
+    .set({
+      late: sql`${submissions.startedAt} > (SELECT ${assignments.dueAt} FROM ${assignments} WHERE ${assignments.id} = ${submissions.assignmentId})`,
+    })
     .where(eq(submissions.assignmentId, assignmentId))
     .run();
 }

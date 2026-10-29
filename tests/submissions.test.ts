@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "@/lib/db/client";
 import {
@@ -290,8 +291,59 @@ describe("startSubmission and completeSubmission", () => {
 
   it("re-judges lateness when the deadline moves", async () => {
     await submitOk(NOW + 2 * DAY);
-    await rejudgeLateness(db, assignmentId, NOW + 3 * DAY);
+    await db
+      .update(assignments)
+      .set({ dueAt: NOW + 3 * DAY })
+      .where(eq(assignments.id, assignmentId))
+      .run();
+    await rejudgeLateness(db, assignmentId);
     expect((await db.select().from(submissions).get())?.late).toBe(false);
+  });
+});
+
+describe("changes made while Drive is set up", () => {
+  // Runs `change` in the gap between the checks and the save, as a
+  // lecturer acting during a slow Drive call would.
+  function during(change: () => Promise<unknown>) {
+    const real = drive.io.createUploadSession;
+    drive.io.createUploadSession = async (args) => {
+      await change();
+      return real(args);
+    };
+  }
+  const setItem = (values: Partial<typeof assignments.$inferInsert>) =>
+    db.update(assignments).set(values).where(eq(assignments.id, assignmentId)).run();
+
+  it("refuses an item closed meanwhile", async () => {
+    during(() => setItem({ open: false }));
+    expect((await start()).code).toBe("CLOSED");
+    expect(await db.select().from(submissions).all()).toEqual([]);
+  });
+
+  it("refuses an item deleted meanwhile", async () => {
+    during(() => db.delete(assignments).where(eq(assignments.id, assignmentId)).run());
+    expect((await start()).code).toBe("NO_ASSIGNMENT");
+    expect(await db.select().from(submissions).all()).toEqual([]);
+  });
+
+  it("judges lateness against a deadline moved meanwhile", async () => {
+    during(() => setItem({ dueAt: NOW - DAY }));
+    const started = await start();
+    expect(started).toMatchObject({ code: "OK", late: true });
+    expect((await db.select().from(submissions).get())?.late).toBe(true);
+  });
+});
+
+describe("rejudgeLateness", () => {
+  it("follows the stored deadline whichever change re-judges last", async () => {
+    await submitOk(NOW + 2 * DAY);
+    // Change A (to a day later) is saved, then change B (back to the
+    // original) is saved and re-judged, then A's late re-judge runs.
+    await db.update(assignments).set({ dueAt: NOW + 3 * DAY }).where(eq(assignments.id, assignmentId)).run();
+    await db.update(assignments).set({ dueAt: NOW + DAY }).where(eq(assignments.id, assignmentId)).run();
+    await rejudgeLateness(db, assignmentId);
+    await rejudgeLateness(db, assignmentId);
+    expect((await db.select().from(submissions).get())?.late).toBe(true);
   });
 });
 
@@ -470,6 +522,21 @@ describe("group work", () => {
     expect((await finish(second)).code).toBe("MEMBER_TAKEN");
     // Cara is still free to hand in with someone else.
     expect((await groupSubmit("5555", ["6666"])).code).toBe("OK");
+  });
+
+  it("re-checks the group size if it shrinks while Drive is set up", async () => {
+    const real = drive.io.createUploadSession;
+    drive.io.createUploadSession = async (args) => {
+      await db
+        .update(assignments)
+        .set({ maxGroupSize: 2 })
+        .where(eq(assignments.id, projectId))
+        .run();
+      return real(args);
+    };
+    const r = await start({ studentIdRaw: "1111", assignmentId: projectId, memberIdsRaw: ["4444", "5555"] });
+    expect(r).toMatchObject({ code: "BAD_GROUP", message: expect.stringMatching(/at most 2/) });
+    expect(await db.select().from(submissions).all()).toEqual([]);
   });
 
   it("looks up a group mate's name as they're added", async () => {

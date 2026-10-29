@@ -1,14 +1,14 @@
 "use server";
 
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { z } from "zod";
 import { requireLecturer } from "@/lib/auth";
 import { hasSubmissions } from "@/lib/data/assignments";
-import { db } from "@/lib/db";
-import { assignments, classes } from "@/lib/db/schema";
+import { db, type Db } from "@/lib/db";
+import { assignments, classes, submissions } from "@/lib/db/schema";
 import { googleDrive } from "@/lib/google/drive";
 import { scheduleSubmissionsSync, syncSubmissionsTab } from "@/lib/sheets/sync";
 import { ensureAssignmentFolder, rejudgeLateness } from "@/lib/submissions";
@@ -59,7 +59,12 @@ function groupFields(data: { groupWork: boolean; maxGroupSize: number }) {
 
 const id = z.coerce.number().int().positive();
 
-async function titleTaken(classId: number, title: string, exceptId?: number) {
+async function titleTaken(
+  db: Pick<Db, "select">,
+  classId: number,
+  title: string,
+  exceptId?: number,
+) {
   const row = await db
     .select({ id: assignments.id })
     .from(assignments)
@@ -108,10 +113,8 @@ export async function createAssignment(
     .where(eq(classes.id, classId.data))
     .get();
   if (!cls) return { ok: false, message: "Class not found." };
-  if (await titleTaken(cls.id, title)) {
-    return { ok: false, message: `This class already has “${title}”.` };
-  }
 
+  // One statement, so two saves of the same title can't both get through.
   const row = await db
     .insert(assignments)
     .values({
@@ -123,8 +126,12 @@ export async function createAssignment(
       ...groupFields(parsed.data),
       createdAt: Date.now(),
     })
+    .onConflictDoNothing({ target: [assignments.classId, assignments.title] })
     .returning({ id: assignments.id })
     .get();
+  if (!row) {
+    return { ok: false, message: `This class already has “${title}”.` };
+  }
 
   afterChange(cls.id, row.id);
   revalidatePath(`/classes/${cls.id}`);
@@ -146,27 +153,37 @@ export async function updateAssignment(
   const dueAt = localInputToMs(parsed.data.dueAt, appTimeZone());
   if (dueAt === null) return { ok: false, message: "Enter a valid deadline." };
 
-  const current = await db
-    .select()
-    .from(assignments)
-    .where(eq(assignments.id, assignmentId.data))
-    .get();
-  if (!current) return { ok: false, message: "Item not found." };
-  if (await titleTaken(current.classId, title, current.id)) {
-    return { ok: false, message: `This class already has “${title}”.` };
-  }
+  // In one transaction, which holds the write lock: no submission can start
+  // and no other save can land between these checks and the update.
+  type Saved =
+    | { ok: false; message: string }
+    | { ok: true; current: typeof assignments.$inferSelect };
+  const result = await db.transaction(async (tx): Promise<Saved> => {
+    const current = await tx
+      .select()
+      .from(assignments)
+      .where(eq(assignments.id, assignmentId.data))
+      .get();
+    if (!current) return { ok: false, message: "Item not found." };
+    if (await titleTaken(tx, current.classId, title, current.id)) {
+      return { ok: false, message: `This class already has “${title}”.` };
+    }
 
-  // Group settings are fixed once anyone has started handing in, so no
-  // existing group falls outside them.
-  const group = (await hasSubmissions(db, current.id))
-    ? { groupWork: current.groupWork, maxGroupSize: current.maxGroupSize }
-    : groupFields(parsed.data);
-  await db
-    .update(assignments)
-    .set({ title, kind, dueAt, instructions: instructions || null, ...group })
-    .where(eq(assignments.id, current.id))
-    .run();
-  if (dueAt !== current.dueAt) await rejudgeLateness(db, current.id, dueAt);
+    // Group settings are fixed once anyone has started handing in, so no
+    // existing group falls outside them.
+    const group = (await hasSubmissions(tx, current.id))
+      ? { groupWork: current.groupWork, maxGroupSize: current.maxGroupSize }
+      : groupFields(parsed.data);
+    await tx
+      .update(assignments)
+      .set({ title, kind, dueAt, instructions: instructions || null, ...group })
+      .where(eq(assignments.id, current.id))
+      .run();
+    if (dueAt !== current.dueAt) await rejudgeLateness(tx, current.id);
+    return { ok: true, current };
+  });
+  if (!result.ok) return result;
+  const { current } = result;
 
   const folderId = current.driveFolderId;
   if (folderId && title !== current.title) {
@@ -202,20 +219,30 @@ export async function updateDeadline(
       : localInputToMs(String(formData.get("dueAt") ?? ""), appTimeZone());
   if (dueAt === null) return { ok: false, message: "Enter a valid deadline." };
 
-  const current = await db
-    .select({ classId: assignments.classId, dueAt: assignments.dueAt })
-    .from(assignments)
-    .where(eq(assignments.id, assignmentId.data))
-    .get();
-  if (!current) return { ok: false, message: "Item not found." };
-  if (dueAt === current.dueAt) return { ok: true, message: "No change." };
-
-  await db
-    .update(assignments)
-    .set({ dueAt })
-    .where(eq(assignments.id, assignmentId.data))
-    .run();
-  await rejudgeLateness(db, assignmentId.data, dueAt);
+  // The update and the re-judge commit together; the re-judge reads the
+  // stored deadline, so overlapping saves agree with whichever lands last.
+  const current = await db.transaction(async (tx) => {
+    const row = await tx
+      .update(assignments)
+      .set({ dueAt })
+      .where(
+        and(eq(assignments.id, assignmentId.data), ne(assignments.dueAt, dueAt)),
+      )
+      .returning({ classId: assignments.classId })
+      .get();
+    if (row) await rejudgeLateness(tx, assignmentId.data);
+    return row;
+  });
+  if (!current) {
+    const exists = await db
+      .select({ id: assignments.id })
+      .from(assignments)
+      .where(eq(assignments.id, assignmentId.data))
+      .get();
+    return exists
+      ? { ok: true, message: "No change." }
+      : { ok: false, message: "Item not found." };
+  }
   // Late marks in the sheet follow the new deadline.
   after(() => scheduleSubmissionsSync(current.classId));
   revalidatePath(`/classes/${current.classId}`);
@@ -244,16 +271,28 @@ export async function deleteAssignment(
   assignmentId: number,
 ): Promise<{ error: string } | undefined> {
   await requireLecturer();
+  // One statement, so a submission can't start between the check and the
+  // delete.
   const row = await db
-    .select({ classId: assignments.classId })
-    .from(assignments)
-    .where(eq(assignments.id, assignmentId))
+    .delete(assignments)
+    .where(
+      and(
+        eq(assignments.id, assignmentId),
+        sql`NOT EXISTS (SELECT 1 FROM ${submissions} WHERE ${submissions.assignmentId} = ${assignments.id})`,
+      ),
+    )
+    .returning({ classId: assignments.classId })
     .get();
-  if (!row) return { error: "Item not found." };
-  if (await hasSubmissions(db, assignmentId)) {
-    return { error: "Students have already submitted to this item. Close it instead." };
+  if (!row) {
+    const exists = await db
+      .select({ id: assignments.id })
+      .from(assignments)
+      .where(eq(assignments.id, assignmentId))
+      .get();
+    return exists
+      ? { error: "Students have already submitted to this item. Close it instead." }
+      : { error: "Item not found." };
   }
-  await db.delete(assignments).where(eq(assignments.id, assignmentId)).run();
   after(() => scheduleSubmissionsSync(row.classId));
   revalidatePath(`/classes/${row.classId}`);
   redirect(`/classes/${row.classId}`);

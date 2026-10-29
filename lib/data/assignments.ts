@@ -182,7 +182,10 @@ export async function getAssignmentDetail(db: Db, assignmentId: number) {
 }
 
 // Submissions of any status, so an item that has been started on is kept.
-export async function hasSubmissions(db: Db, assignmentId: number) {
+export async function hasSubmissions(
+  db: Pick<Db, "select">,
+  assignmentId: number,
+) {
   const row = await db
     .select({ value: count() })
     .from(submissions)
