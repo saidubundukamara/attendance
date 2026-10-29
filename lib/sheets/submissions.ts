@@ -2,7 +2,7 @@
 // each cell the time it was handed in. The database is the record; the tab is
 // rebuilt from it in full on every change, so it heals itself after a failed
 // write. It belongs to the app: edits made in it by hand are overwritten.
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import {
   assignments,
@@ -13,6 +13,7 @@ import {
   submissions,
 } from "@/lib/db/schema";
 import { formatStamp } from "@/lib/timezone";
+import { LEASE_MS } from "./write";
 
 export const SUBMISSIONS_TAB_PREFIX = "Subs of ";
 
@@ -116,39 +117,86 @@ export type SubmissionsSheetIo = {
 };
 
 // Rewrites the class's tab and records the outcome on the class, so the
-// lecturer pages can show a failure and offer to retry.
+// lecturer pages can show a failure and offer to retry. Only one run writes
+// a class's tab at a time, or an older snapshot could land after a newer
+// one. A call that finds another run writing leaves it to that run, which
+// sees the request and goes round again.
 export async function writeSubmissionsTab(
   db: Db,
   io: SubmissionsSheetIo,
   classId: number,
   timeZone: string,
+  now: () => number = Date.now,
 ): Promise<void> {
-  const cls = await db
-    .select({ code: classes.code })
-    .from(classes)
+  const asked = await db
+    .update(classes)
+    .set({ submissionsSyncRequested: sql`${classes.submissionsSyncRequested} + 1` })
     .where(eq(classes.id, classId))
+    .returning({ id: classes.id })
     .get();
-  if (!cls) return;
-  const title = submissionsTabTitle(cls.code);
-  try {
-    const grid = buildSubmissionsGrid(
-      await loadSubmissionsGrid(db, classId),
-      timeZone,
-    );
-    await io.ensureTab(title);
-    await io.replaceTabValues(title, grid);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+  if (!asked) return;
+  const taken = await db
+    .update(classes)
+    .set({ submissionsSyncUntil: now() + LEASE_MS })
+    .where(
+      and(
+        eq(classes.id, classId),
+        or(
+          isNull(classes.submissionsSyncUntil),
+          lt(classes.submissionsSyncUntil, now()),
+        ),
+      ),
+    )
+    .run();
+  if (taken.rowsAffected === 0) return;
+
+  for (;;) {
+    const cls = await db
+      .select({
+        code: classes.code,
+        requested: classes.submissionsSyncRequested,
+      })
+      .from(classes)
+      .where(eq(classes.id, classId))
+      .get();
+    if (!cls) return;
+    const title = submissionsTabTitle(cls.code);
+    try {
+      const grid = buildSubmissionsGrid(
+        await loadSubmissionsGrid(db, classId),
+        timeZone,
+      );
+      await io.ensureTab(title);
+      await io.replaceTabValues(title, grid);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await db
+        .update(classes)
+        .set({
+          submissionsSheetError: `Could not update "${title}": ${message}`,
+          submissionsSyncUntil: null,
+        })
+        .where(eq(classes.id, classId))
+        .run();
+      throw error;
+    }
+    // Freed only if nobody asked again while this snapshot was written;
+    // otherwise go round with a fresh one.
+    const released = await db
+      .update(classes)
+      .set({ submissionsSheetError: null, submissionsSyncUntil: null })
+      .where(
+        and(
+          eq(classes.id, classId),
+          eq(classes.submissionsSyncRequested, cls.requested),
+        ),
+      )
+      .run();
+    if (released.rowsAffected > 0) return;
     await db
       .update(classes)
-      .set({ submissionsSheetError: `Could not update "${title}": ${message}` })
+      .set({ submissionsSyncUntil: now() + LEASE_MS })
       .where(eq(classes.id, classId))
       .run();
-    throw error;
   }
-  await db
-    .update(classes)
-    .set({ submissionsSheetError: null })
-    .where(eq(classes.id, classId))
-    .run();
 }

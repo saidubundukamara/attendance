@@ -6,12 +6,15 @@ import {
   count,
   desc,
   eq,
+  gt,
   inArray,
   isNotNull,
+  isNull,
   lt,
   min,
   ne,
   or,
+  sql,
 } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import { classes, syncJobs } from "@/lib/db/schema";
@@ -68,28 +71,23 @@ export async function processSyncJobs(
   const now = options.now ?? Date.now;
   const summary: SyncSummary = { done: 0, failed: 0, deferred: 0, errors: [] };
 
-  const jobs = await db
-    .select()
-    .from(syncJobs)
-    .where(
-      options.includeExhausted
-        ? ne(syncJobs.status, "DONE")
-        : or(
-            eq(syncJobs.status, "PENDING"),
-            and(
-              eq(syncJobs.status, "FAILED"),
-              lt(syncJobs.attempts, MAX_ATTEMPTS),
-            ),
-          ),
-    )
-    .orderBy(asc(syncJobs.id))
-    .all();
-  if (jobs.length === 0) return summary;
-
-  const byClass = new Map<number, typeof jobs>();
-  for (const job of jobs) {
-    byClass.set(job.classId, [...(byClass.get(job.classId) ?? []), job]);
-  }
+  const waiting = options.includeExhausted
+    ? ne(syncJobs.status, "DONE")
+    : or(
+        eq(syncJobs.status, "PENDING"),
+        and(
+          eq(syncJobs.status, "FAILED"),
+          lt(syncJobs.attempts, MAX_ATTEMPTS),
+        ),
+      );
+  const classIds = (
+    await db
+      .selectDistinct({ classId: syncJobs.classId })
+      .from(syncJobs)
+      .where(waiting)
+      .all()
+  ).map((row) => row.classId);
+  if (classIds.length === 0) return summary;
 
   const markDone = async (ids: number[]) => {
     if (ids.length === 0) return;
@@ -101,10 +99,14 @@ export async function processSyncJobs(
     summary.done += ids.length;
   };
   // The job itself cannot be placed; counts towards MAX_ATTEMPTS.
-  const markFailed = async (job: (typeof jobs)[number], message: string) => {
+  const markFailed = async (job: typeof syncJobs.$inferSelect, message: string) => {
     await db
       .update(syncJobs)
-      .set({ status: "FAILED", attempts: job.attempts + 1, lastError: message })
+      .set({
+        status: "FAILED",
+        attempts: sql`${syncJobs.attempts} + 1`,
+        lastError: message,
+      })
       .where(eq(syncJobs.id, job.id))
       .run();
     summary.failed++;
@@ -123,13 +125,10 @@ export async function processSyncJobs(
     summary.errors.push(message);
   };
 
-  for (const [classId, classJobs] of byClass) {
-    const cls = await db
-      .select()
-      .from(classes)
-      .where(eq(classes.id, classId))
-      .get();
-    if (!cls) continue;
+  const syncClass = async (
+    cls: typeof classes.$inferSelect,
+    classJobs: (typeof syncJobs.$inferSelect)[],
+  ) => {
     const allIds = classJobs.map((job) => job.id);
 
     let values: unknown[][];
@@ -140,7 +139,7 @@ export async function processSyncJobs(
         allIds,
         `Could not read "${cls.sheetTab}": ${errorMessage(error)}`,
       );
-      continue;
+      return;
     }
 
     const tab = parseAttendanceTab(values);
@@ -148,7 +147,7 @@ export async function processSyncJobs(
 
     // Later jobs for the same cell replace earlier ones (present, then
     // corrected to absent, writes only the 0).
-    const latest = new Map<string, (typeof jobs)[number]>();
+    const latest = new Map<string, typeof syncJobs.$inferSelect>();
     const superseded: number[] = [];
     for (const job of classJobs) {
       const key = `${job.studentId}:${job.week}`;
@@ -157,7 +156,7 @@ export async function processSyncJobs(
       latest.set(key, job);
     }
 
-    const writes: { job: (typeof jobs)[number]; cell: CellWrite }[] = [];
+    const writes: { job: typeof syncJobs.$inferSelect; cell: CellWrite }[] = [];
     const unchanged: number[] = [];
     for (const job of latest.values()) {
       const row = rowById.get(job.studentId);
@@ -198,7 +197,7 @@ export async function processSyncJobs(
           [...writes.map((w) => w.job.id), ...unchanged, ...superseded],
           `Could not write to "${cls.sheetTab}": ${errorMessage(error)}`,
         );
-        continue;
+        return;
       }
     }
     await markDone([
@@ -206,9 +205,90 @@ export async function processSyncJobs(
       ...unchanged,
       ...superseded,
     ]);
+  };
+
+  for (const classId of classIds) {
+    // Only one run writes a class's tab at a time, or an older run could
+    // write a value after a newer one. A class another run holds is left to
+    // it: that run goes round again for anything queued meanwhile.
+    const cls = await takeLease(db, classId, now());
+    if (!cls) continue;
+    try {
+      let seen = 0;
+      let first = true;
+      for (;;) {
+        const jobs = await db
+          .select()
+          .from(syncJobs)
+          .where(
+            and(
+              eq(syncJobs.classId, classId),
+              first
+                ? waiting
+                : and(eq(syncJobs.status, "PENDING"), gt(syncJobs.id, seen)),
+            ),
+          )
+          .orderBy(asc(syncJobs.id))
+          .all();
+        first = false;
+        if (jobs.length > 0) {
+          seen = jobs[jobs.length - 1].id;
+          await syncClass(cls, jobs);
+        }
+        // Freed only if nothing new was queued since the read above.
+        if (await releaseLease(db, classId, seen)) break;
+        await db
+          .update(classes)
+          .set({ sheetSyncUntil: now() + LEASE_MS })
+          .where(eq(classes.id, classId))
+          .run();
+      }
+    } catch (error) {
+      await db
+        .update(classes)
+        .set({ sheetSyncUntil: null })
+        .where(eq(classes.id, classId))
+        .run();
+      throw error;
+    }
   }
 
   return summary;
+}
+
+// Long enough for any sync run; a run that dies frees the class after this.
+export const LEASE_MS = 2 * 60 * 1000;
+
+// Takes the class's sync lease in one statement; null when another run
+// holds it.
+async function takeLease(db: Db, classId: number, now: number) {
+  return await db
+    .update(classes)
+    .set({ sheetSyncUntil: now + LEASE_MS })
+    .where(
+      and(
+        eq(classes.id, classId),
+        or(isNull(classes.sheetSyncUntil), lt(classes.sheetSyncUntil, now)),
+      ),
+    )
+    .returning()
+    .get();
+}
+
+// Frees the lease unless a job newer than `seen` is waiting, in one
+// statement so a job queued at the same moment can't be stranded.
+async function releaseLease(db: Db, classId: number, seen: number) {
+  const result = await db
+    .update(classes)
+    .set({ sheetSyncUntil: null })
+    .where(
+      and(
+        eq(classes.id, classId),
+        sql`NOT EXISTS (SELECT 1 FROM ${syncJobs} WHERE ${syncJobs.classId} = ${classId} AND ${syncJobs.status} = 'PENDING' AND ${syncJobs.id} > ${seen})`,
+      ),
+    )
+    .run();
+  return result.rowsAffected > 0;
 }
 
 export type SyncStatus = {

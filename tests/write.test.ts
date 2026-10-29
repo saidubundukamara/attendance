@@ -1,9 +1,11 @@
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "@/lib/db/client";
 import { classes, syncJobs } from "@/lib/db/schema";
 import { cellRange, columnLetter } from "@/lib/sheets/client";
 import {
   getSyncStatus,
+  LEASE_MS,
   MAX_ATTEMPTS,
   processSyncJobs,
   type CellWrite,
@@ -262,5 +264,67 @@ describe("processSyncJobs", () => {
       "Attn of TEST101",
       "Attn of TEST202",
     ]);
+  });
+});
+
+describe("processSyncJobs overlapping runs", () => {
+  const lease = async () =>
+    (await db.select().from(classes).where(eq(classes.id, classId)).get())
+      ?.sheetSyncUntil;
+  const NOW = 1_000_000;
+
+  it("leaves a class to the run already writing it", async () => {
+    await db
+      .update(classes)
+      .set({ sheetSyncUntil: NOW + LEASE_MS })
+      .where(eq(classes.id, classId))
+      .run();
+    await queue("900000001", 1);
+    await processSyncJobs(db, io, { now: () => NOW });
+    expect(written).toEqual([]);
+    expect((await jobs())[0].status).toBe("PENDING");
+    expect(await lease()).toBe(NOW + LEASE_MS);
+  });
+
+  it("takes over a class whose run stopped without freeing it", async () => {
+    await db
+      .update(classes)
+      .set({ sheetSyncUntil: NOW - 1 })
+      .where(eq(classes.id, classId))
+      .run();
+    await queue("900000001", 1);
+    await processSyncJobs(db, io, { now: () => NOW });
+    expect(written).toHaveLength(1);
+    expect(await lease()).toBeNull();
+  });
+
+  it("goes round again for a correction queued while it was writing", async () => {
+    await queue("900000001", 1);
+    const write = io.writeCells;
+    let corrected = false;
+    io.writeCells = async (cells) => {
+      await write(cells);
+      // The lecturer un-marks the student while the 1 is being sent.
+      if (!corrected) {
+        corrected = true;
+        await queue("900000001", 1, 0);
+      }
+    };
+    await processSyncJobs(db, io, { now: () => NOW });
+    expect(sheet[10][4]).toBe(0);
+    expect((await jobs()).every((job) => job.status === "DONE")).toBe(true);
+    expect(await lease()).toBeNull();
+  });
+
+  it("frees the class when the sheet rejects the write", async () => {
+    await queue("900000001", 1);
+    writeError = new Error("quota");
+    const summary = await processSyncJobs(db, io, { now: () => NOW });
+    expect(summary.deferred).toBe(1);
+    expect(await lease()).toBeNull();
+    // The next run is free to try again.
+    writeError = null;
+    await processSyncJobs(db, io, { now: () => NOW });
+    expect(sheet[10][4]).toBe(1);
   });
 });
