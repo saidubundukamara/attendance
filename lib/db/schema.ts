@@ -25,6 +25,16 @@ export const classes = sqliteTable("classes", {
   driveFolderId: text("drive_folder_id"),
   // Last failure writing the "Subs of <CODE>" tab; null once it succeeds.
   submissionsSheetError: text("submissions_sheet_error"),
+  // Leases (Unix ms) held by whichever run is writing this class's attendance
+  // or submissions tab, so overlapping runs can't write stale values. Null
+  // or past means free; a run that dies frees it by running out.
+  sheetSyncUntil: integer("sheet_sync_until"),
+  submissionsSyncUntil: integer("submissions_sync_until"),
+  // Bumped by every request to rewrite the submissions tab, so the run
+  // holding the lease knows to go again.
+  submissionsSyncRequested: integer("submissions_sync_requested")
+    .notNull()
+    .default(0),
 });
 
 export const students = sqliteTable("students", {
