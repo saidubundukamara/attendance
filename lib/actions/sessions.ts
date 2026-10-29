@@ -7,7 +7,11 @@ import { z } from "zod";
 import { requireLecturer } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { closeSession, openSession, recordPastWeek } from "@/lib/sessions";
-import { scheduleSheetSync, syncRoster } from "@/lib/sheets/sync";
+import {
+  scheduleSheetSync,
+  scheduleSubmissionsSyncAfterRoster,
+  syncRoster,
+} from "@/lib/sheets/sync";
 
 export type StartState =
   { error: string; activeSessionId?: string } | undefined;
@@ -33,7 +37,8 @@ export async function startSession(
   // cannot be reached, carry on with the roster already stored.
   let rosterStale = false;
   try {
-    await syncRoster();
+    const report = await syncRoster();
+    after(() => scheduleSubmissionsSyncAfterRoster(report));
   } catch {
     rosterStale = true;
   }

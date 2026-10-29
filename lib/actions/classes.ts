@@ -2,12 +2,17 @@
 
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { z } from "zod";
 import { requireLecturer } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { classes } from "@/lib/db/schema";
 import type { RosterSyncReport } from "@/lib/sheets/roster";
-import { retrySheetSync, syncRoster } from "@/lib/sheets/sync";
+import {
+  retrySheetSync,
+  scheduleSubmissionsSyncAfterRoster,
+  syncRoster,
+} from "@/lib/sheets/sync";
 import { getSyncStatus } from "@/lib/sheets/write";
 import { isIsoDate } from "@/lib/week";
 
@@ -20,6 +25,7 @@ export async function syncRosterAction(): Promise<SyncState> {
   await requireLecturer();
   try {
     const report = await syncRoster();
+    after(() => scheduleSubmissionsSyncAfterRoster(report));
     revalidatePath("/dashboard");
     return { ok: true, report };
   } catch (error) {

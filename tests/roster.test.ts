@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "@/lib/db/client";
-import { classes, enrollments, students } from "@/lib/db/schema";
+import { assignments, classes, enrollments, students } from "@/lib/db/schema";
 import { parseAttendanceTab } from "@/lib/sheets/parse";
-import { applyRoster } from "@/lib/sheets/roster";
+import { applyRoster, classesNeedingSubsSync } from "@/lib/sheets/roster";
 import { createTestDb } from "./helpers/db";
 import { buildTab, type FixtureStudent } from "./helpers/sheet";
 
@@ -144,5 +144,45 @@ describe("applyRoster", () => {
     expect(report.classes[1].warnings).toHaveLength(1);
     expect(await db.select().from(classes).all()).toHaveLength(1);
     expect(await activeIds("TEST101")).toEqual(["900000001"]);
+  });
+});
+
+describe("classesNeedingSubsSync", () => {
+  const classId = async (code: string) =>
+    (await db.select().from(classes).where(eq(classes.code, code)).get())!.id;
+  const addItem = async (code: string) =>
+    db
+      .insert(assignments)
+      .values({ classId: await classId(code), title: "Assignment 1", dueAt: 1, createdAt: 1 })
+      .run();
+
+  it("picks classes with items whose roster changed", async () => {
+    await applyRoster(db, [
+      tab("Attn of TEST101", [ONE]),
+      tab("Attn of TEST202", [ONE]),
+      tab("Attn of TEST303", [ONE]),
+    ]);
+    await addItem("TEST101");
+    await addItem("TEST202");
+    const report = await applyRoster(db, [
+      // A student joins.
+      tab("Attn of TEST101", [ONE, TWO]),
+      // Nothing changes.
+      tab("Attn of TEST202", [ONE]),
+      // A student joins, but there is nothing to hand in yet.
+      tab("Attn of TEST303", [ONE, THREE]),
+    ]);
+    expect(await classesNeedingSubsSync(db, report)).toEqual([
+      await classId("TEST101"),
+    ]);
+  });
+
+  it("picks a class a student left", async () => {
+    await applyRoster(db, [tab("Attn of TEST101", [ONE, TWO])]);
+    await addItem("TEST101");
+    const report = await applyRoster(db, [tab("Attn of TEST101", [ONE])]);
+    expect(await classesNeedingSubsSync(db, report)).toEqual([
+      await classId("TEST101"),
+    ]);
   });
 });

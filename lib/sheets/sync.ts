@@ -8,7 +8,11 @@ import {
   writeCells,
 } from "./client";
 import { parseAttendanceTab } from "./parse";
-import { applyRoster, type RosterSyncReport } from "./roster";
+import {
+  applyRoster,
+  classesNeedingSubsSync,
+  type RosterSyncReport,
+} from "./roster";
 import { writeSubmissionsTab } from "./submissions";
 import { processSyncJobs, type SyncSummary } from "./write";
 
@@ -108,6 +112,15 @@ export async function scheduleSubmissionsSync(classId: number): Promise<void> {
   } finally {
     subsState.running = false;
   }
+}
+
+// New students get a row in each "Subs of" tab, and those who left drop
+// out, without waiting for the next submission.
+export async function scheduleSubmissionsSyncAfterRoster(
+  report: RosterSyncReport,
+): Promise<void> {
+  const ids = await classesNeedingSubsSync(db, report);
+  await Promise.all(ids.map((id) => scheduleSubmissionsSync(id)));
 }
 
 // Immediate rewrite, for the lecturer's "Update sheet" button.

@@ -1,6 +1,6 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
-import { classes, enrollments, students } from "@/lib/db/schema";
+import { assignments, classes, enrollments, students } from "@/lib/db/schema";
 import { classCodeFromTab, type ParsedTab } from "./parse";
 
 export type ClassSyncReport = {
@@ -155,4 +155,24 @@ export async function applyRoster(
   });
 
   return { syncedAt: now, classes: reports };
+}
+
+// Classes whose "Subs of" tab needs rebuilding after a sync: their roster
+// changed and they have something to hand in, so the tab already exists or
+// is due to.
+export async function classesNeedingSubsSync(
+  db: Db,
+  report: RosterSyncReport,
+): Promise<number[]> {
+  const codes = report.classes
+    .filter((c) => c.added > 0 || c.deactivated > 0)
+    .map((c) => c.code);
+  if (codes.length === 0) return [];
+  const rows = await db
+    .selectDistinct({ id: classes.id })
+    .from(classes)
+    .innerJoin(assignments, eq(assignments.classId, classes.id))
+    .where(inArray(classes.code, codes))
+    .all();
+  return rows.map((r) => r.id);
 }
