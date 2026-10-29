@@ -162,6 +162,15 @@ export async function checkIn(
 
     try {
       return await db.transaction(async (tx): Promise<CheckInCode> => {
+        // The session may have ended since it was read above. The transaction
+        // holds the write lock, so it can't end between here and the insert.
+        const current = await tx
+          .select({ status: sessions.status })
+          .from(sessions)
+          .where(eq(sessions.id, session.id))
+          .get();
+        if (current?.status !== "ACTIVE") return "CLOSED";
+
         // 6. Already present?
         const existing = await tx
           .select({ id: attendance.id, status: attendance.status })

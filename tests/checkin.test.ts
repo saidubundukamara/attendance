@@ -189,6 +189,25 @@ describe("checkIn", () => {
     expect((await rows()).map((r) => r.status)).toEqual(["ABSENT", "ABSENT"]);
   });
 
+  it("rejects a check-in when the session ends while it is being checked", async () => {
+    // The session ends after the status was read but before the write.
+    const real = db;
+    db = Object.assign(Object.create(real), {
+      transaction: async (...args: Parameters<Db["transaction"]>) => {
+        await closeSession(real, sessionId);
+        return real.transaction(...args);
+      },
+    });
+    try {
+      expect((await submit("900000001")).code).toBe("CLOSED");
+    } finally {
+      db = real;
+    }
+    expect((await rows()).map((r) => r.status)).toEqual(["ABSENT", "ABSENT"]);
+    const queued = await db.select().from(syncJobs).all();
+    expect(queued.every((job) => job.value === 0)).toBe(true);
+  });
+
   it("rejects an expired pass", async () => {
     const at = NOW + PASS_TTL_SECONDS * 1000;
     expect((await submit("900000001", { at })).code).toBe("EXPIRED");
