@@ -829,6 +829,47 @@ export async function completeSubmission(
   };
 }
 
+// Takes back a submission, for when a student handed in the wrong thing:
+// everyone it covered can submit again. Returns the Drive files to clear
+// up, or null when it was already gone. In one transaction, which holds the
+// write lock, so a student finishing the same upload can't interleave; their
+// confirmation then finds nothing and expires.
+export async function removeSubmission(
+  db: Db,
+  submissionId: number,
+): Promise<{ classId: number; assignmentId: number; driveFileIds: string[] } | null> {
+  return await db.transaction(async (tx) => {
+    const sub = await tx
+      .select({
+        assignmentId: submissions.assignmentId,
+        classId: assignments.classId,
+      })
+      .from(submissions)
+      .innerJoin(assignments, eq(assignments.id, submissions.assignmentId))
+      .where(eq(submissions.id, submissionId))
+      .get();
+    if (!sub) return null;
+    const files = await tx
+      .select({ driveFileId: submissionFiles.driveFileId })
+      .from(submissionFiles)
+      .where(eq(submissionFiles.submissionId, submissionId))
+      .all();
+    await tx
+      .delete(submissionFiles)
+      .where(eq(submissionFiles.submissionId, submissionId))
+      .run();
+    await tx
+      .delete(submissionMembers)
+      .where(eq(submissionMembers.submissionId, submissionId))
+      .run();
+    await tx.delete(submissions).where(eq(submissions.id, submissionId)).run();
+    return {
+      ...sub,
+      driveFileIds: files.flatMap((f) => (f.driveFileId ? [f.driveFileId] : [])),
+    };
+  });
+}
+
 // Lateness follows the deadline: moving it re-judges every submission
 // against when its upload started. Reads the stored deadline in the same
 // statement, so overlapping deadline changes can't leave it judged against

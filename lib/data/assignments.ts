@@ -71,6 +71,7 @@ export type RosterEntry = {
   name: string;
   active: boolean;
   submission: {
+    id: number;
     late: boolean;
     submittedAt: number;
     files: { name: string; driveFileId: string; size: number }[];
@@ -154,6 +155,7 @@ export async function getAssignmentDetail(db: Db, assignmentId: number) {
       ...s,
       submission: sub
         ? {
+            id: sub.submissionId,
             late: sub.late,
             submittedAt: sub.submittedAt ?? 0,
             submittedBy:

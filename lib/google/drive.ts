@@ -32,6 +32,8 @@ export type DriveIo = {
     origin: string;
   }): Promise<string>;
   getFile(fileId: string): Promise<DriveFile | null>;
+  // To the trash, where Drive keeps it for 30 days; not deleted outright.
+  trashFile(fileId: string): Promise<void>;
 };
 
 const FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -151,6 +153,19 @@ export const googleDrive: DriveIo = {
     } catch (error) {
       if (status(error) === 404) return null;
       throw error;
+    }
+  },
+
+  async trashFile(fileId) {
+    try {
+      await client().drive.files.update({
+        fileId,
+        requestBody: { trashed: true },
+        supportsAllDrives: true,
+      });
+    } catch (error) {
+      // Already deleted by hand.
+      if (status(error) !== 404) throw error;
     }
   },
 };

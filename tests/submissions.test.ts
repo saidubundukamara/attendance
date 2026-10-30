@@ -15,6 +15,7 @@ import {
   completeSubmission,
   lookupStudent,
   rejudgeLateness,
+  removeSubmission,
   startSubmission,
   UPLOAD_WINDOW_MS,
 } from "@/lib/submissions";
@@ -46,6 +47,9 @@ function fakeDrive() {
       return url;
     },
     getFile: async (id) => files.get(id) ?? null,
+    trashFile: async (id) => {
+      files.delete(id);
+    },
   };
   // What the browser's PUT would do.
   const upload = (url: string, size?: number) => {
@@ -347,6 +351,42 @@ describe("rejudgeLateness", () => {
   });
 });
 
+describe("removeSubmission", () => {
+  it("takes back a submission so the student can hand in again", async () => {
+    const { submissionFiles, submissionMembers } = await import("@/lib/db/schema");
+    await submitOk();
+    const sub = (await db.select().from(submissions).get())!;
+    const removed = await removeSubmission(db, sub.id);
+    expect(removed).toMatchObject({ classId, assignmentId });
+    expect(removed?.driveFileIds).toHaveLength(1);
+    expect(await db.select().from(submissions).all()).toEqual([]);
+    expect(await db.select().from(submissionFiles).all()).toEqual([]);
+    expect(await db.select().from(submissionMembers).all()).toEqual([]);
+    expect((await submitOk()).code).toBe("OK");
+  });
+
+  it("returns null for a submission already gone", async () => {
+    expect(await removeSubmission(db, 9999)).toBeNull();
+  });
+
+  it("expires an upload that is confirmed after it was removed", async () => {
+    const started = await start();
+    if (started.code !== "OK") throw new Error(started.code);
+    await removeSubmission(db, started.submissionId);
+    const uploads = started.uploads.map((u) => ({
+      fileId: u.fileId,
+      driveFileId: drive.upload(u.uploadUrl),
+    }));
+    const result = await completeSubmission(
+      db,
+      drive.io,
+      { submissionId: started.submissionId, token: started.token, uploads, ip },
+      NOW + 1000,
+    );
+    expect(result.code).toBe("EXPIRED");
+  });
+});
+
 describe("getClassSubmissionMatrix", () => {
   it("lists who is missing per item and counts per student", async () => {
     const { getClassSubmissionMatrix } = await import("@/lib/data/assignments");
@@ -537,6 +577,14 @@ describe("group work", () => {
     const r = await start({ studentIdRaw: "1111", assignmentId: projectId, memberIdsRaw: ["4444", "5555"] });
     expect(r).toMatchObject({ code: "BAD_GROUP", message: expect.stringMatching(/at most 2/) });
     expect(await db.select().from(submissions).all()).toEqual([]);
+  });
+
+  it("frees everyone in the group when their submission is removed", async () => {
+    await groupSubmit("1111", ["4444", "5555"]);
+    const sub = (await db.select().from(submissions).get())!;
+    await removeSubmission(db, sub.id);
+    expect((await groupSubmit("4444", ["1111"])).code).toBe("OK");
+    expect((await groupSubmit("5555", [])).code).toBe("OK");
   });
 
   it("looks up a group mate's name as they're added", async () => {

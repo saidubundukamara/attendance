@@ -11,7 +11,11 @@ import { db, type Db } from "@/lib/db";
 import { assignments, classes, submissions } from "@/lib/db/schema";
 import { googleDrive } from "@/lib/google/drive";
 import { scheduleSubmissionsSync, syncSubmissionsTab } from "@/lib/sheets/sync";
-import { ensureAssignmentFolder, rejudgeLateness } from "@/lib/submissions";
+import {
+  ensureAssignmentFolder,
+  rejudgeLateness,
+  removeSubmission,
+} from "@/lib/submissions";
 import { appTimeZone, localInputToMs } from "@/lib/timezone";
 
 export type AssignmentState =
@@ -296,6 +300,34 @@ export async function deleteAssignment(
   after(() => scheduleSubmissionsSync(row.classId));
   revalidatePath(`/classes/${row.classId}`);
   redirect(`/classes/${row.classId}`);
+}
+
+// The lecturer takes back a submission, e.g. the wrong file was handed in.
+// The page asks before calling this.
+export async function removeSubmissionAction(
+  submissionId: number,
+): Promise<{ error: string } | undefined> {
+  await requireLecturer();
+  if (!Number.isInteger(submissionId) || submissionId <= 0) {
+    return { error: "Submission not found." };
+  }
+  const removed = await removeSubmission(db, submissionId);
+  if (!removed) return { error: "This submission was already removed." };
+
+  after(async () => {
+    for (const fileId of removed.driveFileIds) {
+      try {
+        await googleDrive.trashFile(fileId);
+      } catch (error) {
+        console.error("Could not move the file to the Drive trash", error);
+      }
+    }
+    await scheduleSubmissionsSync(removed.classId);
+  });
+  revalidatePath(`/classes/${removed.classId}`);
+  revalidatePath(
+    `/classes/${removed.classId}/assignments/${removed.assignmentId}`,
+  );
 }
 
 export type SheetSyncState = { ok: boolean; message: string } | undefined;

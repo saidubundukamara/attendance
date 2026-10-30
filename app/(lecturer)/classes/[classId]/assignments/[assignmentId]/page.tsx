@@ -21,7 +21,12 @@ import {
 } from "@/lib/timezone";
 import { AssignmentForm } from "../../assignment-form";
 import { CopyLinkButton } from "../../copy-link-button";
-import { DeleteButton, OpenToggle, ResyncButton } from "./controls";
+import {
+  DeleteButton,
+  OpenToggle,
+  RemoveSubmissionButton,
+  ResyncButton,
+} from "./controls";
 import { DeadlineEditor } from "./deadline-editor";
 
 export const metadata = { title: "Assignment — Attendance" };
@@ -45,6 +50,16 @@ const FILTERS = {
   },
 } as const;
 type Filter = keyof typeof FILTERS;
+
+// The confirmation names everyone a removal would affect.
+function removeQuestion(entry: RosterEntry): string {
+  const everyone = [entry.name, ...(entry.submission?.groupmates ?? [])];
+  const tail =
+    "The files go to the Drive trash and they can submit again.";
+  if (everyone.length === 1) return `Remove ${entry.name}'s submission? ${tail}`;
+  const names = `${everyone.slice(0, -1).join(", ")} and ${everyone.at(-1)}`;
+  return `Remove this submission for ${names}? ${tail}`;
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -258,6 +273,10 @@ export default async function AssignmentPage({
                         </li>
                       ))}
                     </ul>
+                    <RemoveSubmissionButton
+                      submissionId={entry.submission.id}
+                      question={removeQuestion(entry)}
+                    />
                   </div>
                 ) : (
                   <span className="text-sm text-muted">Not submitted</span>

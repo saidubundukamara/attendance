@@ -6,6 +6,7 @@ import { ConfirmButton } from "@/components/ui/confirm-button";
 import { Refresh } from "@/components/ui/icons";
 import {
   deleteAssignment,
+  removeSubmissionAction,
   resyncSubmissionsSheet,
   setAssignmentOpen,
 } from "@/lib/actions/assignments";
@@ -52,6 +53,37 @@ export function DeleteButton({ id }: { id: number }) {
         onConfirm={() =>
           start(async () => {
             const result = await deleteAssignment(id);
+            if (result) setError(result.error);
+          })
+        }
+      />
+      {error && <p className="text-sm text-danger">{error}</p>}
+    </div>
+  );
+}
+
+// Asks first; only the confirm press removes anything.
+export function RemoveSubmissionButton({
+  submissionId,
+  question,
+}: {
+  submissionId: number;
+  question: string;
+}) {
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="mt-2 flex flex-wrap items-center justify-end gap-3">
+      <ConfirmButton
+        label="Remove"
+        question={question}
+        confirmLabel="Remove"
+        pendingLabel="Removing…"
+        pending={pending}
+        size="sm"
+        onConfirm={() =>
+          start(async () => {
+            const result = await removeSubmissionAction(submissionId);
             if (result) setError(result.error);
           })
         }
