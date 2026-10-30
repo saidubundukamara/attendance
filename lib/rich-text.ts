@@ -100,3 +100,57 @@ export function parseInline(text: string): Inline[] {
   }
   return out;
 }
+
+// Lecturers often open with their own "Instructions" line. The student page
+// already heads the brief with that word, so drop it there.
+const LABEL = /^\s*(?:#{1,6}\s+)?(?:\*\*|__)?\s*instructions\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
+
+export function withoutInstructionsLabel(source: string): string {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const first = lines.findIndex((line) => line.trim() !== "");
+  if (first === -1 || !LABEL.test(lines[first])) return source;
+  return lines.slice(first + 1).join("\n").replace(/^\s*\n/, "");
+}
+
+// A link as a reader can take it in: the host and the start of the path,
+// e.g. "docs.google.com/document/d/1AbC…". The href itself is untouched.
+export function linkLabel(href: string, max = 40): string {
+  let label: string;
+  try {
+    const url = new URL(href);
+    label = url.host.replace(/^www\./, "") + url.pathname.replace(/\/$/, "");
+  } catch {
+    label = href;
+  }
+  return label.length > max ? `${label.slice(0, max - 1)}…` : label;
+}
+
+function inlineText(nodes: Inline[]): string {
+  return nodes
+    .map((node) =>
+      node.type === "text"
+        ? node.text
+        : node.type === "link"
+          ? linkLabel(node.href)
+          : inlineText(node.children),
+    )
+    .join("");
+}
+
+// The brief as one line of plain text, for the preview on the student's
+// list. Headings are left out unless there is nothing else.
+export function richTextPreview(source: string): string {
+  const blocks = parseRichText(withoutInstructionsLabel(source));
+  const body = blocks.filter((block) => block.type !== "heading");
+  return (body.length ? body : blocks)
+    .map((block) =>
+      block.type === "heading"
+        ? inlineText(block.children)
+        : block.type === "paragraph"
+          ? block.lines.map(inlineText).join(" ")
+          : block.items.map(inlineText).join(" · "),
+    )
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}

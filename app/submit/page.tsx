@@ -24,10 +24,12 @@ export default async function SubmitPage() {
 
   return (
     <main className="mx-auto w-full max-w-lg flex-1 px-4 pt-[clamp(2.5rem,10vh,5rem)] pb-24">
-      <div className="stagger">
+      <div className="group stagger">
         <h1 className="text-4xl font-semibold tracking-tight">Submit work</h1>
+        {/* Only needed before the student signs in; hidden after, to give a
+            phone's first screen to the work itself. */}
         <p
-          className="mt-2 text-muted"
+          className="mt-2 text-muted group-has-[[data-signed-in]]:hidden"
           style={{ "--i": 1 } as React.CSSProperties}
         >
           Hand in assignments, classwork and projects as PDF, Word (.docx) or

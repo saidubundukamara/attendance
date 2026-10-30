@@ -1,12 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ConfirmButton } from "@/components/ui/confirm-button";
 import { inputClass, Label } from "@/components/ui/field";
-import { ArrowLeft, Check, Clock, Cross, Plus } from "@/components/ui/icons";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  Clock,
+  Cross,
+  Plus,
+} from "@/components/ui/icons";
 import { Notice } from "@/components/ui/notice";
 import { RichText } from "@/components/ui/rich-text";
+import { richTextPreview, withoutInstructionsLabel } from "@/lib/rich-text";
 import { STUDENT_ID_PREFIX } from "@/lib/student-id";
 import {
   ACCEPT_ATTRIBUTE,
@@ -87,6 +95,19 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// Names come from the roster as typed; capitalise each word for display.
+function displayName(name: string): string {
+  return name.replace(/(^|[\s'-])(\p{Ll})/gu, (_, before, letter: string) =>
+    before + letter.toUpperCase(),
+  );
+}
+
+// The item a shared or reloaded link points at, from ?item=<id>.
+function itemFromUrl(): number | null {
+  const id = Number(new URLSearchParams(window.location.search).get("item"));
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
 const KIND_LABEL: Record<StudentItem["kind"], string> = {
   ASSIGNMENT: "Assignment",
   CLASSWORK: "Classwork",
@@ -145,6 +166,61 @@ export function SubmitFlow({
   }, [signedIn]);
   const cls = classes.find((c) => c.id === classId);
 
+  // Each step change starts at the top with focus on the step's heading, so
+  // a screen reader announces where the student now is.
+  const stepHeading = useRef<HTMLHeadingElement>(null);
+  const step = !student
+    ? null
+    : !item
+      ? "list"
+      : done
+        ? "done"
+        : `item:${item.id}`;
+  useEffect(() => {
+    if (step === null) return;
+    window.scrollTo(0, 0);
+    stepHeading.current?.focus({ preventScroll: true });
+  }, [step]);
+
+  function pick(next: StudentItem | null) {
+    setItem(next);
+    setFiles([]);
+    setMembers([]);
+    setDone(null);
+    setProgress(null);
+    setError(null);
+  }
+
+  // An open item lives in the URL (?item=<id>) so the phone's Back gesture
+  // returns to the list instead of leaving the page and the sign-in.
+  const onPopState = useEffectEvent(() => {
+    if (busy) {
+      // Mid-upload: stay put rather than abandon the transfer.
+      if (item) window.history.pushState({ item: item.id }, "", `?item=${item.id}`);
+      return;
+    }
+    pick(null);
+  });
+  useEffect(() => {
+    if (!signedIn) return;
+    const handler = () => onPopState();
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, [signedIn]);
+
+  function open(next: StudentItem) {
+    pick(next);
+    window.history.pushState({ item: next.id }, "", `?item=${next.id}`);
+  }
+
+  function close() {
+    if ((window.history.state as { item?: number } | null)?.item) {
+      window.history.back();
+    } else {
+      pick(null);
+    }
+  }
+
   async function lookup() {
     if (classId === "") return;
     setNow(Date.now());
@@ -158,6 +234,11 @@ export function SubmitFlow({
       if (result.code === "OK") {
         setStudent(result.student);
         setItems(result.items);
+        // A link to one item opens it once the student is known, with the
+        // list underneath it in the history.
+        const linked = result.items.find((it) => it.id === itemFromUrl());
+        window.history.replaceState(null, "", window.location.pathname);
+        if (linked) open(linked);
       } else {
         setError(message(result));
       }
@@ -169,19 +250,11 @@ export function SubmitFlow({
   }
 
   function signOut() {
+    window.history.replaceState(null, "", window.location.pathname);
     setStudent(null);
     setItems([]);
     setItem(null);
     setDigits("");
-    setError(null);
-  }
-
-  function pick(next: StudentItem | null) {
-    setItem(next);
-    setFiles([]);
-    setMembers([]);
-    setDone(null);
-    setProgress(null);
     setError(null);
   }
 
@@ -354,9 +427,14 @@ export function SubmitFlow({
   }
 
   const header = (
-    <div className="mt-10 flex flex-wrap items-baseline justify-between gap-2 border-b border-line pb-4">
+    // data-signed-in hides the page's introduction, which only matters
+    // before the student is known (see app/submit/page.tsx).
+    <div
+      data-signed-in
+      className="mt-6 flex flex-wrap items-baseline justify-between gap-2 border-b border-line pb-4"
+    >
       <p>
-        <span className="font-semibold">{student.name}</span>
+        <span className="font-semibold">{displayName(student.name)}</span>
         <span className="ml-2 font-mono text-sm text-muted">
           {student.studentId}
         </span>
@@ -372,13 +450,30 @@ export function SubmitFlow({
     </div>
   );
 
-  // Step 2: pick what to hand in.
+  const backButton = (
+    <button
+      type="button"
+      onClick={close}
+      disabled={busy}
+      className="group -ml-2 mt-6 inline-flex h-8 items-center gap-1.5 rounded-full px-2 text-sm text-muted transition-colors duration-200 hover:text-ink"
+    >
+      <ArrowLeft className="size-3.5" />
+      All items
+    </button>
+  );
+
+  // Step 2: the class's work. Each card says whether there is a brief to
+  // read, and every card opens, including finished and closed ones.
   if (!item) {
     return (
       <div className="animate-rise">
         {header}
-        <h2 className="mt-8 text-lg font-semibold tracking-tight">
-          What are you submitting?
+        <h2
+          ref={stepHeading}
+          tabIndex={-1}
+          className="mt-8 text-lg font-semibold tracking-tight outline-none"
+        >
+          Your work
         </h2>
         {items.length === 0 ? (
           <p className="mt-3 text-muted">Nothing has been set for this class yet.</p>
@@ -388,22 +483,38 @@ export function SubmitFlow({
               const sub = it.submission;
               const overdue = now > it.dueAt;
               const available = !sub && it.open;
+              const preview = it.instructions
+                ? richTextPreview(it.instructions)
+                : "";
+              const cue = sub
+                ? "View your submission"
+                : !it.open
+                  ? preview
+                    ? "Read the instructions"
+                    : null
+                  : preview
+                    ? "Read the instructions and submit"
+                    : "Submit";
+              const ids = `item-${it.id}`;
               return (
                 <li key={it.id}>
                   <button
                     type="button"
-                    disabled={!available}
-                    onClick={() => pick(it)}
-                    className="w-full rounded-2xl bg-surface px-4 py-3.5 text-left shadow-soft ring-1 ring-line transition-[transform,box-shadow] duration-300 ease-spring enabled:hover:ring-line-strong enabled:active:scale-[0.99] disabled:bg-sunken disabled:shadow-none"
+                    onClick={() => open(it)}
+                    aria-labelledby={`${ids}-title`}
+                    aria-describedby={`${ids}-meta${preview ? ` ${ids}-brief` : ""}`}
+                    className={`group w-full rounded-2xl px-4 py-3.5 text-left ring-1 ring-line transition-[transform,box-shadow] duration-300 ease-spring hover:ring-line-strong active:scale-[0.99] ${available ? "bg-surface shadow-soft" : "bg-sunken"}`}
                   >
                     <span className="flex items-baseline justify-between gap-3">
-                      <span className="font-medium">{it.title}</span>
+                      <span id={`${ids}-title`} className="font-medium">
+                        {it.title}
+                      </span>
                       <span className="shrink-0 text-sm text-muted">
                         {KIND_LABEL[it.kind]}
                         {it.groupWork && ` · group of up to ${it.maxGroupSize}`}
                       </span>
                     </span>
-                    <span className="mt-1.5 block text-sm">
+                    <span id={`${ids}-meta`} className="mt-1.5 block text-sm">
                       {sub || !it.open ? (
                         // Done or closed: the deadline stays on show, quieter.
                         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -440,12 +551,49 @@ export function SubmitFlow({
                         </span>
                       )}
                     </span>
+                    {preview && (
+                      <span
+                        id={`${ids}-brief`}
+                        className="mt-3 line-clamp-2 border-t border-line pt-3 text-sm text-muted"
+                      >
+                        {preview}
+                      </span>
+                    )}
+                    {cue && (
+                      <span
+                        aria-hidden
+                        className={`mt-2.5 flex items-center gap-1.5 text-sm font-medium ${available ? "text-ink" : "text-muted"}`}
+                      >
+                        {cue}
+                        <ArrowRight className="size-3.5 transition-transform duration-300 ease-out-expo group-hover:translate-x-0.5" />
+                      </span>
+                    )}
                   </button>
                 </li>
               );
             })}
           </ul>
         )}
+      </div>
+    );
+  }
+
+  // The item, finished or closed: the brief and what was handed in, to read
+  // back. Nothing can be sent from here.
+  if (!done && (item.submission || !item.open)) {
+    return (
+      <div className="animate-rise">
+        {header}
+        {backButton}
+        <h2
+          ref={stepHeading}
+          tabIndex={-1}
+          className="mt-3 text-2xl font-semibold tracking-tight outline-none"
+        >
+          {item.title}
+        </h2>
+        <ItemStatus item={item} now={now} timeZone={timeZone} />
+        {item.instructions && <Brief text={item.instructions} />}
       </div>
     );
   }
@@ -460,7 +608,11 @@ export function SubmitFlow({
         >
           <Check className="size-7" />
         </div>
-        <h2 className="mt-6 text-2xl font-semibold tracking-tight">
+        <h2
+          ref={stepHeading}
+          tabIndex={-1}
+          className="mt-6 text-2xl font-semibold tracking-tight outline-none"
+        >
           {item.title} submitted
         </h2>
         <p className="mt-1 text-muted">
@@ -491,7 +643,7 @@ export function SubmitFlow({
           variant="secondary"
           size="lg"
           className="mt-8"
-          onClick={() => pick(null)}
+          onClick={close}
         >
           Back to the list
         </Button>
@@ -513,27 +665,21 @@ export function SubmitFlow({
   return (
     <div className="animate-rise">
       {header}
-      <button
-        type="button"
-        onClick={() => pick(null)}
-        disabled={busy}
-        className="group -ml-2 mt-6 inline-flex h-8 items-center gap-1.5 rounded-full px-2 text-sm text-muted transition-colors duration-200 hover:text-ink"
+      {backButton}
+      <h2
+        ref={stepHeading}
+        tabIndex={-1}
+        className="mt-3 text-2xl font-semibold tracking-tight outline-none"
       >
-        <ArrowLeft className="size-3.5" />
-        All items
-      </button>
-      <h2 className="mt-3 text-2xl font-semibold tracking-tight">
         {item.title}
       </h2>
       <DeadlinePanel dueAt={item.dueAt} now={now} timeZone={timeZone} />
-      {item.instructions && (
-        <RichText text={item.instructions} className="mt-5 text-sm" />
-      )}
+      {item.instructions && <Brief text={item.instructions} />}
       {item.groupWork && classId !== "" && (
         <GroupMembers
           classId={classId}
           assignmentId={item.id}
-          submitter={{ digits, name: student.name }}
+          submitter={{ digits, name: displayName(student.name) }}
           max={item.maxGroupSize ?? 1}
           members={members}
           onChange={setMembers}
@@ -588,9 +734,6 @@ export function SubmitFlow({
             PDF, Word (.docx) or ZIP · up to {MAX_FILES} files, {MAX_FILE_BYTES / 1024 / 1024} MB each
           </span>
         </label>
-        <p className="mt-2 text-xs text-muted">
-          You can only submit once, so add every file before you press submit.
-        </p>
       </div>
 
       {files.length > 0 && (
@@ -640,6 +783,12 @@ export function SubmitFlow({
       )}
 
       <div className="mt-6">
+        {!busy && (
+          <p className="mb-3 text-sm">
+            You can only submit once, so add every file before you press
+            submit.
+          </p>
+        )}
         {busy ? (
           <p role="status" className="text-sm text-muted tabular-nums">
             {progress
@@ -670,8 +819,10 @@ export function SubmitFlow({
   );
 }
 
+// Green means present, open or done in this app, so a far-off deadline
+// stays neutral and only the closing ones take colour.
 const COUNTDOWN_TONE: Record<Urgency, string> = {
-  later: "bg-accent-soft text-accent-strong",
+  later: "bg-sunken text-muted",
   soon: "bg-warn-soft text-warn",
   today: "bg-warn-soft text-warn",
   passed: "bg-danger-soft text-danger",
@@ -698,14 +849,14 @@ const PANEL_TONE: Record<Urgency, string> = {
 };
 
 const PANEL_TEXT: Record<Urgency, string> = {
-  later: "text-accent-strong",
+  later: "text-muted",
   soon: "text-warn",
   today: "text-warn",
   passed: "text-danger",
 };
 
-// The deadline at the top of the upload step: the date large enough to
-// register, and how long is left in the colour of its urgency.
+// The deadline at the top of the upload step: one line, coloured by how
+// close it is, kept compact so the brief below starts on the first screen.
 function DeadlinePanel({
   dueAt,
   now,
@@ -719,28 +870,113 @@ function DeadlinePanel({
   const passed = left.urgency === "passed";
   return (
     <div
-      className={`mt-4 rounded-2xl px-4 py-3.5 ring-1 ring-inset ${PANEL_TONE[left.urgency]}`}
+      className={`mt-4 rounded-2xl px-4 py-3 ring-1 ring-inset ${PANEL_TONE[left.urgency]}`}
     >
-      <p className="text-xl font-semibold tracking-tight tabular-nums sm:text-2xl">
-        <span className="font-normal text-muted">{passed ? "Was due" : "Due"}</span>{" "}
-        {formatDeadline(dueAt, timeZone)}
-      </p>
-      <p
-        className={`mt-1 flex items-center gap-1.5 font-medium tabular-nums ${PANEL_TEXT[left.urgency]}`}
-      >
-        <Clock className="size-4 shrink-0" />
-        {left.text}
+      <p className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 tabular-nums">
+        <span className="font-semibold">
+          <span className="font-normal text-muted">{passed ? "Was due" : "Due"}</span>{" "}
+          {formatDeadline(dueAt, timeZone)}
+        </span>
+        <span
+          className={`inline-flex items-center gap-1.5 text-sm font-medium ${PANEL_TEXT[left.urgency]}`}
+        >
+          <Clock className="size-3.5 shrink-0 self-center" />
+          {left.text}
+        </span>
       </p>
       {passed ? (
-        <p className="mt-2 text-sm">
+        <p className="mt-1.5 text-sm">
           You can still submit, but it will be marked <strong>LATE</strong>.
         </p>
       ) : left.urgency === "today" ? (
-        <p className="mt-2 text-sm">
+        <p className="mt-1.5 text-sm">
           Less than a day to go. Anything sent after the deadline is marked
           LATE.
         </p>
       ) : null}
+    </div>
+  );
+}
+
+// The lecturer's brief, under a heading of its own on every item so it is
+// never mistaken for small print between the deadline and the upload.
+function Brief({ text }: { text: string }) {
+  return (
+    <section
+      aria-labelledby="brief-heading"
+      className="mt-5 rounded-2xl bg-surface p-4 shadow-soft ring-1 ring-line sm:p-5"
+    >
+      <h3 id="brief-heading" className="text-lg font-semibold tracking-tight">
+        Instructions
+      </h3>
+      <RichText
+        text={withoutInstructionsLabel(text)}
+        headingLevel={4}
+        className="mt-3"
+      />
+    </section>
+  );
+}
+
+// Where a finished or closed item stands, in place of the deadline panel.
+function ItemStatus({
+  item,
+  now,
+  timeZone,
+}: {
+  item: StudentItem;
+  now: number;
+  timeZone: string;
+}) {
+  const sub = item.submission;
+  const tone = !sub
+    ? "bg-sunken ring-line"
+    : sub.late
+      ? "bg-warn-soft ring-warn/25"
+      : "bg-accent-soft ring-accent/25";
+  return (
+    <div className={`mt-4 rounded-2xl px-4 py-3 ring-1 ring-inset ${tone}`}>
+      {sub ? (
+        <p
+          className={`flex flex-wrap items-center gap-x-1.5 font-semibold ${sub.late ? "text-warn" : "text-accent-strong"}`}
+        >
+          <Check className="size-4 shrink-0" />
+          {sub.late ? "Submitted late" : "Submitted"}
+          <span className="font-normal tabular-nums">
+            · {formatStamp(sub.submittedAt, timeZone)}
+          </span>
+        </p>
+      ) : (
+        <p className="font-semibold">Closed</p>
+      )}
+      <p className="mt-1 text-sm text-ink/75 tabular-nums">
+        {now > item.dueAt ? "Was due" : "Due"}{" "}
+        {formatDeadline(item.dueAt, timeZone)}
+      </p>
+      {sub?.submittedBy && (
+        <p className="mt-1.5 text-sm">
+          Handed in by {sub.submittedBy} for your group.
+        </p>
+      )}
+      {sub && sub.members.length > 1 && !sub.submittedBy && (
+        <p className="mt-1.5 text-sm">
+          Handed in for {sub.members.join(", ")}.
+        </p>
+      )}
+      {!sub && (
+        <p className="mt-1.5 text-sm">
+          Your lecturer has closed this item. It no longer accepts submissions.
+        </p>
+      )}
+      {sub && sub.files.length > 0 && (
+        <ul className="mt-3 space-y-1 border-t border-ink/10 pt-3 text-sm">
+          {sub.files.map((name) => (
+            <li key={name} className="truncate">
+              {name}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

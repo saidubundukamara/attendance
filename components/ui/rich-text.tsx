@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { type Inline, parseRichText } from "@/lib/rich-text";
+import { type Inline, linkLabel, parseRichText } from "@/lib/rich-text";
 
 function Inlines({ nodes }: { nodes: Inline[] }) {
   return nodes.map((node, i) =>
@@ -17,31 +17,37 @@ function Inlines({ nodes }: { nodes: Inline[] }) {
       <a
         key={i}
         href={node.href}
+        title={node.href}
         target="_blank"
         rel="noopener noreferrer"
         className="font-medium break-all text-accent-strong underline underline-offset-4"
       >
-        {node.href}
+        {linkLabel(node.href)}
       </a>
     ),
   );
 }
 
 // Assignment instructions as written by the lecturer, see lib/rich-text.ts.
+// With headingLevel, the lecturer's "#" lines become real headings that a
+// screen reader can jump between; without it they are bold paragraphs.
 export function RichText({
   text,
   className = "",
+  headingLevel,
 }: {
   text: string;
   className?: string;
+  headingLevel?: 3 | 4;
 }) {
+  const Heading = headingLevel ? (`h${headingLevel}` as const) : "p";
   return (
     <div className={`max-w-prose space-y-3 leading-relaxed ${className}`}>
       {parseRichText(text).map((block, i) =>
         block.type === "heading" ? (
-          <p key={i} className="pt-1 font-semibold text-ink">
+          <Heading key={i} className="pt-1 font-semibold text-ink">
             <Inlines nodes={block.children} />
-          </p>
+          </Heading>
         ) : block.type === "paragraph" ? (
           <p key={i}>
             {block.lines.map((line, j) => (

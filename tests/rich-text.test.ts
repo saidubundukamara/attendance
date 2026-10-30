@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseInline, parseRichText } from "@/lib/rich-text";
+import {
+  linkLabel,
+  parseInline,
+  parseRichText,
+  richTextPreview,
+  withoutInstructionsLabel,
+} from "@/lib/rich-text";
 
 describe("parseRichText", () => {
   it("reads pasted instructions into headings, paragraphs and lists", () => {
@@ -62,5 +68,40 @@ describe("parseInline", () => {
     expect(parseInline("<script>x</script>")).toEqual([
       { type: "text", text: "<script>x</script>" },
     ]);
+  });
+});
+
+describe("withoutInstructionsLabel", () => {
+  it("drops a lecturer's own Instructions line", () => {
+    expect(withoutInstructionsLabel("**Instructions**\n\nBuild a site.")).toBe(
+      "Build a site.",
+    );
+    expect(withoutInstructionsLabel("\n# Instructions:\nBuild a site.")).toBe(
+      "Build a site.",
+    );
+  });
+
+  it("keeps a first line that only starts with the word", () => {
+    const text = "Instructions are in the PDF.\nRead them.";
+    expect(withoutInstructionsLabel(text)).toBe(text);
+  });
+});
+
+describe("linkLabel", () => {
+  it("shows the host and the start of the path", () => {
+    expect(linkLabel("https://www.example.com/a/b/")).toBe("example.com/a/b");
+    expect(
+      linkLabel("https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit"),
+    ).toBe("docs.google.com/document/d/1AbCdEfGhIjK…");
+  });
+});
+
+describe("richTextPreview", () => {
+  it("flattens the brief to one line without the label or headings", () => {
+    expect(
+      richTextPreview(
+        "**Instructions**\n\nBuild a **blog**.\n\n## Requirements\n1. Home page\n2. See https://example.com/brief",
+      ),
+    ).toBe("Build a blog. Home page · See example.com/brief");
   });
 });
