@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "@/lib/db/client";
 import { classes, sessions } from "@/lib/db/schema";
 import { closeSession, openSession } from "@/lib/sessions";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 
 let db: Db;
 let classA: number;
@@ -17,7 +17,7 @@ beforeEach(async () => {
         (
           await db
             .insert(classes)
-            .values({ code, sheetTab: `Attn of ${code}`, totalWeeks: 15 })
+            .values({ lecturerId: LECTURER, code, sheetTab: `Attn of ${code}`, totalWeeks: 15 })
             .returning()
             .get()
         ).id,

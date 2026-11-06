@@ -29,6 +29,13 @@
       "when": 1793301026912,
       "tag": "0003_giant_luminals",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793965328981,
+      "tag": "0004_multi_lecturer",
+      "breakpoints": true
     }
   ]
 }

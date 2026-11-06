@@ -4,7 +4,7 @@ import type { Db } from "@/lib/db/client";
 import { assignments, classes, enrollments, students } from "@/lib/db/schema";
 import { parseAttendanceTab } from "@/lib/sheets/parse";
 import { applyRoster, classesNeedingSubsSync } from "@/lib/sheets/roster";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 import { buildTab, type FixtureStudent } from "./helpers/sheet";
 
 let db: Db;
@@ -38,7 +38,7 @@ const THREE = { name: "Student Three", id: 900000003 };
 
 describe("applyRoster", () => {
   it("creates classes, students and enrollments from the tabs", async () => {
-    const report = await applyRoster(db, [
+    const report = await applyRoster(db, LECTURER, [
       tab("Attn of TEST101", [ONE, TWO]),
       tab("Attn of TEST202", []),
     ]);
@@ -63,8 +63,8 @@ describe("applyRoster", () => {
   });
 
   it("is idempotent", async () => {
-    await applyRoster(db, [tab("Attn of TEST101", [ONE, TWO])]);
-    const report = await applyRoster(db, [tab("Attn of TEST101", [ONE, TWO])]);
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE, TWO])]);
+    const report = await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE, TWO])]);
     expect(report.classes[0]).toMatchObject({
       found: 2,
       added: 0,
@@ -75,8 +75,8 @@ describe("applyRoster", () => {
   });
 
   it("adds new students and deactivates removed ones, keeping the row", async () => {
-    await applyRoster(db, [tab("Attn of TEST101", [ONE, TWO])]);
-    const report = await applyRoster(db, [
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE, TWO])]);
+    const report = await applyRoster(db, LECTURER, [
       tab("Attn of TEST101", [ONE, THREE]),
     ]);
 
@@ -86,25 +86,25 @@ describe("applyRoster", () => {
   });
 
   it("re-activates a student who returns to the sheet", async () => {
-    await applyRoster(db, [tab("Attn of TEST101", [ONE, TWO])]);
-    await applyRoster(db, [tab("Attn of TEST101", [ONE])]);
-    const report = await applyRoster(db, [tab("Attn of TEST101", [ONE, TWO])]);
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE, TWO])]);
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE])]);
+    const report = await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE, TWO])]);
     expect(report.classes[0]).toMatchObject({ added: 1, deactivated: 0 });
     expect(await activeIds("TEST101")).toEqual(["900000001", "900000002"]);
   });
 
   it("updates a changed name but keeps a known name when the cell is blank", async () => {
-    await applyRoster(db, [tab("Attn of TEST101", [ONE])]);
-    await applyRoster(db, [
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE])]);
+    await applyRoster(db, LECTURER, [
       tab("Attn of TEST101", [{ name: "Student Uno", id: 900000001 }]),
     ]);
     expect((await db.select().from(students).get())?.name).toBe("Student Uno");
-    await applyRoster(db, [tab("Attn of TEST101", [{ id: 900000001 }])]);
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [{ id: 900000001 }])]);
     expect((await db.select().from(students).get())?.name).toBe("Student Uno");
   });
 
   it("shares one student row between two classes", async () => {
-    await applyRoster(db, [
+    await applyRoster(db, LECTURER, [
       tab("Attn of TEST101", [ONE]),
       tab("Attn of TEST202", [ONE]),
     ]);
@@ -114,8 +114,8 @@ describe("applyRoster", () => {
   });
 
   it("does not touch the roster when a tab has no header", async () => {
-    await applyRoster(db, [tab("Attn of TEST101", [ONE, TWO])]);
-    const report = await applyRoster(db, [
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE, TWO])]);
+    const report = await applyRoster(db, LECTURER, [
       { title: "Attn of TEST101", parsed: parseAttendanceTab([["broken"]]) },
     ]);
     expect(report.classes[0].warnings).toHaveLength(1);
@@ -124,12 +124,12 @@ describe("applyRoster", () => {
   });
 
   it("keeps lecturer settings across syncs", async () => {
-    await applyRoster(db, [tab("Attn of TEST101", [ONE])]);
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE])]);
     await db
       .update(classes)
       .set({ startDate: "2026-09-07", totalWeeks: 12 })
       .run();
-    await applyRoster(db, [tab("Attn of TEST101", [ONE])]);
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE])]);
     expect(await db.select().from(classes).get()).toMatchObject({
       startDate: "2026-09-07",
       totalWeeks: 12,
@@ -137,7 +137,7 @@ describe("applyRoster", () => {
   });
 
   it("skips a second tab that resolves to the same class code", async () => {
-    const report = await applyRoster(db, [
+    const report = await applyRoster(db, LECTURER, [
       tab("Attn of TEST101", [ONE]),
       tab("attn of  test101", [TWO]),
     ]);
@@ -157,14 +157,14 @@ describe("classesNeedingSubsSync", () => {
       .run();
 
   it("picks classes with items whose roster changed", async () => {
-    await applyRoster(db, [
+    await applyRoster(db, LECTURER, [
       tab("Attn of TEST101", [ONE]),
       tab("Attn of TEST202", [ONE]),
       tab("Attn of TEST303", [ONE]),
     ]);
     await addItem("TEST101");
     await addItem("TEST202");
-    const report = await applyRoster(db, [
+    const report = await applyRoster(db, LECTURER, [
       // A student joins.
       tab("Attn of TEST101", [ONE, TWO]),
       // Nothing changes.
@@ -172,16 +172,16 @@ describe("classesNeedingSubsSync", () => {
       // A student joins, but there is nothing to hand in yet.
       tab("Attn of TEST303", [ONE, THREE]),
     ]);
-    expect(await classesNeedingSubsSync(db, report)).toEqual([
+    expect(await classesNeedingSubsSync(db, LECTURER, report)).toEqual([
       await classId("TEST101"),
     ]);
   });
 
   it("picks a class a student left", async () => {
-    await applyRoster(db, [tab("Attn of TEST101", [ONE, TWO])]);
+    await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE, TWO])]);
     await addItem("TEST101");
-    const report = await applyRoster(db, [tab("Attn of TEST101", [ONE])]);
-    expect(await classesNeedingSubsSync(db, report)).toEqual([
+    const report = await applyRoster(db, LECTURER, [tab("Attn of TEST101", [ONE])]);
+    expect(await classesNeedingSubsSync(db, LECTURER, report)).toEqual([
       await classId("TEST101"),
     ]);
   });

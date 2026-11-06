@@ -1,6 +1,6 @@
 // Attendance history read from the database. Takes the database as an
 // argument so the arithmetic can be tested.
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import {
   attendance,
@@ -169,15 +169,19 @@ export type StudentSummary = {
   classes: StudentClassSummary[];
 };
 
-// `studentId` is the ID printed in the sheet.
+// `studentId` is the ID printed in the sheet; only the lecturer's own
+// record of that student is read.
 export async function getStudentSummary(
   db: Db,
+  lecturerId: number,
   studentId: string,
 ): Promise<StudentSummary | null> {
   const student = await db
     .select()
     .from(students)
-    .where(eq(students.studentId, studentId))
+    .where(
+      and(eq(students.studentId, studentId), eq(students.lecturerId, lecturerId)),
+    )
     .get();
   if (!student) return null;
 

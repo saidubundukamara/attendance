@@ -21,12 +21,12 @@ export default async function SessionPage({
   params: Promise<{ sessionId: string }>;
   searchParams: Promise<{ roster?: string }>;
 }) {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
   const { sessionId } = await params;
   const { roster } = await searchParams;
   const [session, live] = await Promise.all([
-    getSessionView(sessionId),
-    getLiveSession(sessionId),
+    getSessionView(lecturer.id, sessionId),
+    getLiveSession(lecturer.id, sessionId),
   ]);
   if (!session || !live) notFound();
 

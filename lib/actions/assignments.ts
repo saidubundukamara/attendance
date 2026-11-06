@@ -9,7 +9,8 @@ import { requireLecturer } from "@/lib/auth";
 import { hasSubmissions } from "@/lib/data/assignments";
 import { db, type Db } from "@/lib/db";
 import { assignments, classes, submissions } from "@/lib/db/schema";
-import { googleDrive } from "@/lib/google/drive";
+import { lecturerOfClass, ownsAssignment, ownsClass, ownsSubmission } from "@/lib/data/ownership";
+import { driveFor } from "@/lib/google/drive";
 import { scheduleSubmissionsSync, syncSubmissionsTab } from "@/lib/sheets/sync";
 import {
   ensureAssignmentFolder,
@@ -83,12 +84,19 @@ async function titleTaken(
   return Boolean(row);
 }
 
+// The class owner's Drive.
+async function classDrive(classId: number) {
+  const lecturer = await lecturerOfClass(db, classId);
+  if (!lecturer) throw new Error(`Class ${classId} has no lecturer.`);
+  return driveFor(lecturer);
+}
+
 // The Drive folder and the sheet column are made in the background; a
 // failure there must not lose the item itself.
 function afterChange(classId: number, assignmentId: number) {
   after(async () => {
     try {
-      await ensureAssignmentFolder(db, googleDrive, assignmentId);
+      await ensureAssignmentFolder(db, await classDrive(classId), assignmentId);
     } catch (error) {
       console.error("Could not create the Drive folder", error);
     }
@@ -100,7 +108,7 @@ export async function createAssignment(
   _prev: AssignmentState,
   formData: FormData,
 ): Promise<AssignmentState> {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
   const classId = id.safeParse(formData.get("classId"));
   const parsed = readFields(formData);
   if (!classId.success) return { ok: false, message: "Class not found." };
@@ -114,7 +122,9 @@ export async function createAssignment(
   const cls = await db
     .select({ id: classes.id })
     .from(classes)
-    .where(eq(classes.id, classId.data))
+    .where(
+      and(eq(classes.id, classId.data), eq(classes.lecturerId, lecturer.id)),
+    )
     .get();
   if (!cls) return { ok: false, message: "Class not found." };
 
@@ -146,10 +156,15 @@ export async function updateAssignment(
   _prev: AssignmentState,
   formData: FormData,
 ): Promise<AssignmentState> {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
   const assignmentId = id.safeParse(formData.get("assignmentId"));
   const parsed = readFields(formData);
-  if (!assignmentId.success) return { ok: false, message: "Item not found." };
+  if (
+    !assignmentId.success ||
+    !(await ownsAssignment(db, lecturer.id, assignmentId.data))
+  ) {
+    return { ok: false, message: "Item not found." };
+  }
   if (!parsed.success) {
     return { ok: false, message: parsed.error.issues[0].message };
   }
@@ -193,7 +208,7 @@ export async function updateAssignment(
   if (folderId && title !== current.title) {
     after(async () => {
       try {
-        await googleDrive.renameFolder(folderId, title);
+        await (await classDrive(current.classId)).renameFolder(folderId, title);
       } catch (error) {
         console.error("Could not rename the Drive folder", error);
       }
@@ -213,9 +228,14 @@ export async function updateDeadline(
   _prev: DeadlineState,
   formData: FormData,
 ): Promise<DeadlineState> {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
   const assignmentId = id.safeParse(formData.get("assignmentId"));
-  if (!assignmentId.success) return { ok: false, message: "Item not found." };
+  if (
+    !assignmentId.success ||
+    !(await ownsAssignment(db, lecturer.id, assignmentId.data))
+  ) {
+    return { ok: false, message: "Item not found." };
+  }
   const quick = formData.get("quick");
   const dueAt =
     typeof quick === "string" && /^\d+$/.test(quick)
@@ -258,7 +278,8 @@ export async function setAssignmentOpen(
   assignmentId: number,
   open: boolean,
 ): Promise<void> {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
+  if (!(await ownsAssignment(db, lecturer.id, assignmentId))) return;
   const row = await db
     .update(assignments)
     .set({ open })
@@ -274,7 +295,10 @@ export async function setAssignmentOpen(
 export async function deleteAssignment(
   assignmentId: number,
 ): Promise<{ error: string } | undefined> {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
+  if (!(await ownsAssignment(db, lecturer.id, assignmentId))) {
+    return { error: "Item not found." };
+  }
   // One statement, so a submission can't start between the check and the
   // delete.
   const row = await db
@@ -307,17 +331,22 @@ export async function deleteAssignment(
 export async function removeSubmissionAction(
   submissionId: number,
 ): Promise<{ error: string } | undefined> {
-  await requireLecturer();
-  if (!Number.isInteger(submissionId) || submissionId <= 0) {
+  const lecturer = await requireLecturer();
+  if (
+    !Number.isInteger(submissionId) ||
+    submissionId <= 0 ||
+    !(await ownsSubmission(db, lecturer.id, submissionId))
+  ) {
     return { error: "Submission not found." };
   }
   const removed = await removeSubmission(db, submissionId);
   if (!removed) return { error: "This submission was already removed." };
 
   after(async () => {
+    const drive = driveFor(lecturer);
     for (const fileId of removed.driveFileIds) {
       try {
-        await googleDrive.trashFile(fileId);
+        await drive.trashFile(fileId);
       } catch (error) {
         console.error("Could not move the file to the Drive trash", error);
       }
@@ -335,7 +364,10 @@ export type SheetSyncState = { ok: boolean; message: string } | undefined;
 export async function resyncSubmissionsSheet(
   classId: number,
 ): Promise<SheetSyncState> {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
+  if (!(await ownsClass(db, lecturer.id, classId))) {
+    return { ok: false, message: "Class not found." };
+  }
   try {
     await syncSubmissionsTab(classId);
   } catch (error) {

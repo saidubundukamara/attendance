@@ -10,6 +10,7 @@ import {
   hasSubmissions,
   type RosterEntry,
 } from "@/lib/data/assignments";
+import { ownsAssignment } from "@/lib/data/ownership";
 import { db } from "@/lib/db";
 import { driveFileUrl, driveFolderUrl } from "@/lib/google/drive";
 import {
@@ -73,12 +74,14 @@ export default async function AssignmentPage({
   params: Promise<{ classId: string; assignmentId: string }>;
   searchParams: Promise<{ show?: string; edit?: string }>;
 }) {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
   const { classId, assignmentId } = await params;
   const { show, edit } = await searchParams;
-  const detail = /^\d+$/.test(assignmentId)
-    ? await getAssignmentDetail(db, Number(assignmentId))
-    : null;
+  const detail =
+    /^\d+$/.test(assignmentId) &&
+    (await ownsAssignment(db, lecturer.id, Number(assignmentId)))
+      ? await getAssignmentDetail(db, Number(assignmentId))
+      : null;
   if (!detail || String(detail.assignment.classId) !== classId) notFound();
 
   const { assignment, roster } = detail;

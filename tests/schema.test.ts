@@ -7,7 +7,7 @@ import {
   sessions,
   students,
 } from "@/lib/db/schema";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 
 let db: Db;
 let classId: number;
@@ -19,21 +19,21 @@ beforeEach(async () => {
   classId = (
     await db
       .insert(classes)
-      .values({ code: "TEST101", sheetTab: "Attn of TEST101" })
+      .values({ lecturerId: LECTURER, code: "TEST101", sheetTab: "Attn of TEST101" })
       .returning()
       .get()
   ).id;
   studentA = (
     await db
       .insert(students)
-      .values({ studentId: "900000001", name: "Student One" })
+      .values({ lecturerId: LECTURER, studentId: "900000001", name: "Student One" })
       .returning()
       .get()
   ).id;
   studentB = (
     await db
       .insert(students)
-      .values({ studentId: "900000002", name: "Student Two" })
+      .values({ lecturerId: LECTURER, studentId: "900000002", name: "Student Two" })
       .returning()
       .get()
   ).id;

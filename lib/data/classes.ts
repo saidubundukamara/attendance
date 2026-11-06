@@ -1,6 +1,12 @@
 import { and, asc, count, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { classes, enrollments, sessions, students } from "@/lib/db/schema";
+import {
+  classes,
+  cohorts,
+  enrollments,
+  sessions,
+  students,
+} from "@/lib/db/schema";
 
 async function activeStudentCount(classId: number): Promise<number> {
   const row = await db
@@ -26,8 +32,13 @@ async function lastSession(classId: number) {
     .get();
 }
 
-export async function getDashboardClasses() {
-  const rows = await db.select().from(classes).orderBy(asc(classes.code)).all();
+export async function getDashboardClasses(lecturerId: number) {
+  const rows = await db
+    .select()
+    .from(classes)
+    .where(eq(classes.lecturerId, lecturerId))
+    .orderBy(asc(classes.code))
+    .all();
   // The per-class lookups run together rather than one after another.
   return Promise.all(
     rows.map(async (row) => {
@@ -54,11 +65,11 @@ export async function getDashboardClasses() {
   );
 }
 
-export async function getClass(classId: number) {
+export async function getClass(lecturerId: number, classId: number) {
   const row = await db
     .select()
     .from(classes)
-    .where(eq(classes.id, classId))
+    .where(and(eq(classes.id, classId), eq(classes.lecturerId, lecturerId)))
     .get();
   if (!row) return null;
   const roster = await db
@@ -69,4 +80,13 @@ export async function getClass(classId: number) {
     .orderBy(asc(students.name))
     .all();
   return { ...row, roster };
+}
+
+// Cohorts a lecturer can put a module in; the admin manages the list.
+export async function listCohortOptions() {
+  return db
+    .select({ id: cohorts.id, name: cohorts.name })
+    .from(cohorts)
+    .orderBy(asc(cohorts.name))
+    .all();
 }

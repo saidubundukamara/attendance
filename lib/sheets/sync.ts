@@ -1,11 +1,12 @@
 import { db } from "@/lib/db";
+import { getLecturer, type Lecturer } from "@/lib/lecturers";
+import { lecturerOfClass } from "@/lib/data/ownership";
 import { appTimeZone } from "@/lib/timezone";
 import {
-  ensureTab,
   fetchTabValues,
   listAttendanceTabs,
-  replaceTabValues,
-  writeCells,
+  sheetCtxFor,
+  sheetIo,
 } from "./client";
 import { parseAttendanceTab } from "./parse";
 import {
@@ -16,12 +17,19 @@ import {
 import { writeSubmissionsTab } from "./submissions";
 import { processSyncJobs, type SyncSummary } from "./write";
 
-// Reads every "Attn of ..." tab from the Google Sheet and updates the roster.
-export async function syncRoster(): Promise<RosterSyncReport> {
-  const titles = await listAttendanceTabs();
-  const tabs = await fetchTabValues(titles);
+type SheetLecturer = Pick<Lecturer, "id" | "refreshTokenEnc" | "sheetId">;
+
+// Reads every "Attn of ..." tab from the lecturer's sheet and updates their
+// roster.
+export async function syncRoster(
+  lecturer: SheetLecturer,
+): Promise<RosterSyncReport> {
+  const ctx = sheetCtxFor(lecturer);
+  const titles = await listAttendanceTabs(ctx);
+  const tabs = await fetchTabValues(ctx, titles);
   return applyRoster(
     db,
+    lecturer.id,
     tabs.map(({ title, values }) => ({
       title,
       parsed: parseAttendanceTab(values),
@@ -29,18 +37,42 @@ export async function syncRoster(): Promise<RosterSyncReport> {
   );
 }
 
+// One per lecturer: each has their own sheet and API quota.
 const globalForSync = globalThis as unknown as {
-  __sheetSync?: { running: boolean; again: boolean };
+  __sheetSync?: Map<number, { running: boolean; again: boolean }>;
 };
-const state = (globalForSync.__sheetSync ??= { running: false, again: false });
+const states = (globalForSync.__sheetSync ??= new Map());
+
+function stateFor(lecturerId: number) {
+  let state = states.get(lecturerId);
+  if (!state) {
+    state = { running: false, again: false };
+    states.set(lecturerId, state);
+  }
+  return state;
+}
 
 // Check-ins arrive in bursts; waiting briefly lets one sheet request carry
 // many of them and keeps the request rate under the API quota.
 const BATCH_DELAY_MS = 2000;
 
-// Sends queued attendance to the sheet in the background. Safe to call after
-// every check-in: overlapping calls collapse into one follow-up run.
-export async function scheduleSheetSync(): Promise<void> {
+async function runSheetSync(
+  lecturerId: number,
+  options: { includeExhausted?: boolean } = {},
+): Promise<SyncSummary> {
+  const lecturer = await getLecturer(db, lecturerId);
+  if (!lecturer) return { done: 0, failed: 0, deferred: 0, errors: [] };
+  return processSyncJobs(db, sheetIo(sheetCtxFor(lecturer)), {
+    ...options,
+    lecturerId,
+  });
+}
+
+// Sends the lecturer's queued attendance to their sheet in the background.
+// Safe to call after every check-in: overlapping calls collapse into one
+// follow-up run.
+export async function scheduleSheetSync(lecturerId: number): Promise<void> {
+  const state = stateFor(lecturerId);
   if (state.running) {
     state.again = true;
     return;
@@ -50,7 +82,7 @@ export async function scheduleSheetSync(): Promise<void> {
     do {
       state.again = false;
       await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
-      await processSyncJobs(db, { fetchTabValues, writeCells });
+      await runSheetSync(lecturerId);
     } while (state.again);
   } catch (error) {
     console.error("Sheet sync failed", error);
@@ -63,22 +95,22 @@ export async function scheduleSheetSync(): Promise<void> {
 // restarted mid-sync) are only retried when something calls this. Pages that
 // show the queue call it on every load, so it limits itself.
 const AUTO_RETRY_EVERY_MS = 30_000;
-let lastAutoRetry = 0;
+const lastAutoRetry = new Map<number, number>();
 
-export function retryStalledSync(now: number = Date.now()): void {
-  if (state.running || now - lastAutoRetry < AUTO_RETRY_EVERY_MS) return;
-  lastAutoRetry = now;
-  void scheduleSheetSync();
+export function retryStalledSync(
+  lecturerId: number,
+  now: number = Date.now(),
+): void {
+  if (stateFor(lecturerId).running) return;
+  if (now - (lastAutoRetry.get(lecturerId) ?? 0) < AUTO_RETRY_EVERY_MS) return;
+  lastAutoRetry.set(lecturerId, now);
+  void scheduleSheetSync(lecturerId);
 }
 
-// Immediate run for the "Retry sync" button, including jobs that had
+// Immediate retry for the lecturer's button, including entries that have
 // stopped retrying on their own.
-export function retrySheetSync(): Promise<SyncSummary> {
-  return processSyncJobs(
-    db,
-    { fetchTabValues, writeCells },
-    { includeExhausted: true },
-  );
+export function retrySheetSync(lecturerId: number): Promise<SyncSummary> {
+  return runSheetSync(lecturerId, { includeExhausted: true });
 }
 
 const globalForSubs = globalThis as unknown as {
@@ -117,17 +149,20 @@ export async function scheduleSubmissionsSync(classId: number): Promise<void> {
 // New students get a row in each "Subs of" tab, and those who left drop
 // out, without waiting for the next submission.
 export async function scheduleSubmissionsSyncAfterRoster(
+  lecturerId: number,
   report: RosterSyncReport,
 ): Promise<void> {
-  const ids = await classesNeedingSubsSync(db, report);
+  const ids = await classesNeedingSubsSync(db, lecturerId, report);
   await Promise.all(ids.map((id) => scheduleSubmissionsSync(id)));
 }
 
 // Immediate rewrite, for the lecturer's "Update sheet" button.
-export function syncSubmissionsTab(classId: number): Promise<void> {
+export async function syncSubmissionsTab(classId: number): Promise<void> {
+  const lecturer = await lecturerOfClass(db, classId);
+  if (!lecturer) return;
   return writeSubmissionsTab(
     db,
-    { ensureTab, replaceTabValues },
+    sheetIo(sheetCtxFor(lecturer)),
     classId,
     appTimeZone(),
   );

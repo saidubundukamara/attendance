@@ -5,7 +5,7 @@ import { ArrowBadge, buttonClass } from "@/components/ui/button";
 import { LiveDot } from "@/components/ui/status";
 import { requireLecturer } from "@/lib/auth";
 import { getClassAssignments } from "@/lib/data/assignments";
-import { getClass } from "@/lib/data/classes";
+import { getClass, listCohortOptions } from "@/lib/data/classes";
 import { getClassHistory } from "@/lib/data/history";
 import { db } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
@@ -18,8 +18,12 @@ import { SettingsForm } from "./settings-form";
 
 type Props = { params: Promise<{ classId: string }> };
 
+// Only the signed-in lecturer's own classes.
 async function loadClass(classId: string) {
-  return /^\d+$/.test(classId) ? await getClass(Number(classId)) : null;
+  const lecturer = await requireLecturer();
+  return /^\d+$/.test(classId)
+    ? await getClass(lecturer.id, Number(classId))
+    : null;
 }
 
 export async function generateMetadata({ params }: Props) {
@@ -30,11 +34,12 @@ export async function generateMetadata({ params }: Props) {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export default async function ClassPage({ params }: Props) {
-  await requireLecturer();
   const cls = await loadClass((await params).classId);
   const history = cls ? await getClassHistory(db, cls.id) : null;
   if (!cls || !history) notFound();
   const items = await getClassAssignments(db, cls.id);
+  const cohortOptions = await listCohortOptions();
+  const cohortName = cohortOptions.find((c) => c.id === cls.cohortId)?.name;
 
   const timeZone = appTimeZone();
   const now = new Date();
@@ -114,7 +119,10 @@ export default async function ClassPage({ params }: Props) {
           )}
         </div>
 
-        <details className="group mt-5 text-sm" open={!cls.startDate}>
+        <details
+          className="group mt-5 text-sm"
+          open={!cls.startDate || !cohortName}
+        >
           <summary className="inline-flex cursor-pointer list-none flex-wrap items-center gap-x-2 rounded-lg py-1 text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
             {cls.startDate && startMs !== null ? (
               <span>
@@ -133,6 +141,13 @@ export default async function ClassPage({ params }: Props) {
                 suggested.
               </span>
             )}
+            {cohortName ? (
+              <span>· {cohortName}</span>
+            ) : (
+              <span className="font-medium text-warn">
+                Not in a cohort, so students can’t find it on the submit page.
+              </span>
+            )}
             <span className="font-medium text-ink underline underline-offset-4 group-open:hidden">
               Edit
             </span>
@@ -141,6 +156,8 @@ export default async function ClassPage({ params }: Props) {
             classId={cls.id}
             startDate={cls.startDate ?? ""}
             totalWeeks={cls.totalWeeks}
+            cohortId={cls.cohortId}
+            cohorts={cohortOptions}
           />
         </details>
       </div>

@@ -1,7 +1,8 @@
 // Public: checks a submission and opens one Drive upload per file.
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { googleDrive } from "@/lib/google/drive";
+import { lecturerOfClass } from "@/lib/data/ownership";
+import { driveFor } from "@/lib/google/drive";
 import { getClientIp } from "@/lib/request";
 import { MAX_FILES } from "@/lib/submission-files";
 import { startSubmission } from "@/lib/submissions";
@@ -28,7 +29,11 @@ const schema = z.object({
 export async function POST(request: Request) {
   const body = await readJson(request, schema);
   if (!body) return json({ code: "BAD_REQUEST" }, 400);
-  const result = await startSubmission(db, googleDrive, {
+  // Files go to the Drive of the lecturer who owns the class.
+  const lecturer = await lecturerOfClass(db, body.classId);
+  if (!lecturer) return json({ code: "NOT_FOUND" });
+  if (!lecturer.refreshTokenEnc) return json({ code: "UPLOAD_FAILED" });
+  const result = await startSubmission(db, driveFor(lecturer), {
     classId: body.classId,
     studentIdRaw: body.studentId,
     assignmentId: body.assignmentId,

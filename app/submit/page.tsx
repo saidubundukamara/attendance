@@ -1,7 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import { connection } from "next/server";
 import { db } from "@/lib/db";
-import { assignments, classes } from "@/lib/db/schema";
+import { assignments, classes, cohorts } from "@/lib/db/schema";
 import { appTimeZone } from "@/lib/timezone";
 import { SubmitFlow } from "./submit-flow";
 
@@ -10,16 +10,13 @@ export const metadata = { title: "Submit work" };
 export default async function SubmitPage() {
   // Read the class list on every request, not once at build time.
   await connection();
-  // Only classes that have something to hand in.
+  // Only cohorts with a module that has something to hand in.
   const rows = await db
-    .selectDistinct({
-      id: classes.id,
-      code: classes.code,
-      moduleName: classes.moduleName,
-    })
-    .from(classes)
+    .selectDistinct({ id: cohorts.id, name: cohorts.name })
+    .from(cohorts)
+    .innerJoin(classes, eq(classes.cohortId, cohorts.id))
     .innerJoin(assignments, eq(assignments.classId, classes.id))
-    .orderBy(asc(classes.code))
+    .orderBy(asc(cohorts.name))
     .all();
 
   return (
@@ -42,7 +39,7 @@ export default async function SubmitPage() {
               work.
             </p>
           ) : (
-            <SubmitFlow classes={rows} timeZone={appTimeZone()} />
+            <SubmitFlow cohorts={rows} timeZone={appTimeZone()} />
           )}
         </div>
       </div>

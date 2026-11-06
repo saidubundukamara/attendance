@@ -8,6 +8,7 @@ import {
   assignments,
   classes,
   enrollments,
+  lecturers,
   students,
   submissionFiles,
   submissionMembers,
@@ -83,7 +84,7 @@ export async function ensureAssignmentFolder(
   if (!classFolderId) {
     const created = await drive.createFolder(
       classFolderName(row),
-      drive.rootFolderId(),
+      await drive.rootFolderId(),
     );
     await db
       .update(classes)
@@ -357,6 +358,80 @@ export async function lookupStudent(
           : null,
       };
     }),
+  };
+}
+
+export type ModuleOption = {
+  classId: number;
+  code: string;
+  moduleName: string | null;
+  lecturerName: string;
+};
+
+export type ModulesResult =
+  | {
+      code: "OK";
+      student: { name: string; studentId: string };
+      modules: ModuleOption[];
+    }
+  | { code: "NOT_FOUND" | "INVALID_ID" | "RATE_LIMITED"; message?: string };
+
+// The modules in a cohort that the student is on the list for and that have
+// something to hand in, across every lecturer. Each lecturer keeps their own
+// record of the student, so the ID is matched in each lecturer's roster.
+export async function lookupCohortModules(
+  db: Db,
+  input: { cohortId: number; studentIdRaw: string | null; ip: string },
+  now: number = Date.now(),
+): Promise<ModulesResult> {
+  if (limited(input.ip, now)) return { code: "RATE_LIMITED" };
+  const enteredId = expandStudentId(
+    normalizeStudentId(input.studentIdRaw ?? "").slice(0, 32),
+  );
+  if (!isValidStudentId(enteredId)) return { code: "INVALID_ID" };
+
+  const rows = await db
+    .select({
+      classId: classes.id,
+      code: classes.code,
+      moduleName: classes.moduleName,
+      lecturerName: lecturers.name,
+      studentName: students.name,
+      studentId: students.studentId,
+    })
+    .from(enrollments)
+    .innerJoin(students, eq(students.id, enrollments.studentId))
+    .innerJoin(classes, eq(classes.id, enrollments.classId))
+    .innerJoin(lecturers, eq(lecturers.id, classes.lecturerId))
+    .where(
+      and(
+        eq(classes.cohortId, input.cohortId),
+        eq(enrollments.active, true),
+        eq(students.studentId, enteredId),
+        sql`EXISTS (SELECT 1 FROM ${assignments} WHERE ${assignments.classId} = ${classes.id})`,
+      ),
+    )
+    .orderBy(asc(classes.code), asc(classes.id))
+    .all();
+  if (rows.length === 0) {
+    return {
+      code: "NOT_FOUND",
+      message:
+        "That ID isn't on the list for any module with work in this cohort. Check the cohort and the digits.",
+    };
+  }
+  // Lecturers' sheets may spell the name differently; any one will do to
+  // greet the student.
+  const named = rows.find((r) => r.studentName) ?? rows[0];
+  return {
+    code: "OK",
+    student: { name: named.studentName, studentId: named.studentId },
+    modules: rows.map(({ classId, code, moduleName, lecturerName }) => ({
+      classId,
+      code,
+      moduleName,
+      lecturerName,
+    })),
   };
 }
 

@@ -1,8 +1,10 @@
 # Attendance
 
-QR code attendance for one lecturer, written straight into a Google Sheet.
+QR code attendance for lecturers, written straight into each lecturer's own Google Sheet.
 
-The lecturer starts a session and puts a rotating QR code on the projector. Students scan it with their phone, type the last four digits of their student ID, and are marked present. Each check-in is saved locally and then written to the class tab of the lecturer's Google Sheet.
+Lecturers sign in with Google and pick their attendance sheet. A lecturer starts a session and puts a rotating QR code on the projector. Students scan it with their phone, type the last four digits of their student ID, and are marked present. Each check-in is saved in the app's database and then written to the class tab of that lecturer's sheet.
+
+- **Lecturers:** only Google accounts the admin has approved can sign in. Each lecturer's classes, students, sheet and Drive are their own; one lecturer never sees another's.
 
 - **Student page:** one small HTML response (under 6 KB, no framework), built for cheap phones and slow data. It works with JavaScript off.
 - **Lecturer screens:** classes, the projected QR with a live count, attendance history with manual corrections, and a per-student summary.
@@ -22,7 +24,7 @@ npm run db:migrate             # creates the tables
 npm run dev
 ```
 
-Open http://localhost:3000, sign in with `LECTURER_PASSWORD`, and press **Sync roster** to load your classes from the sheet.
+Do the [Google setup](#google-setup) first. Then open http://localhost:3000, sign in with an `ADMIN_EMAILS` Google account, and pick your attendance sheet. Its classes and students load straight away; **Sync roster** reloads them.
 
 ## Environment variables
 
@@ -34,105 +36,75 @@ All of these go in `.env.local`, which is gitignored.
 | `TURSO_AUTH_TOKEN` | The token for that Turso database. |
 | `DATABASE_PATH` | The local SQLite file, used only when `TURSO_DATABASE_URL` is empty. Default `./data/attendance.db`. |
 | `APP_URL` | The address students' phones will open. It is encoded into every QR code, so it must be reachable from their phones. See [Testing with real phones](#testing-with-real-phones). |
-| `LECTURER_PASSWORD` | The password for the lecturer sign-in. |
 | `AUTH_SECRET` | Signs the lecturer's session cookie. |
 | `QR_SECRET` | Signs QR tokens and check-in passes. |
-| `GOOGLE_SHEET_ID` | The spreadsheet to read the roster from and write attendance to. |
-| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | The service account the app signs in to Google as. |
-| `GOOGLE_PRIVATE_KEY` | That service account's private key. |
-| `GOOGLE_DRIVE_MODE` | `oauth` (default) to store submissions in your own Google Drive, or `shared` for a Workspace Shared Drive. See [Google Drive setup](#google-drive-setup). |
-| `GOOGLE_DRIVE_FOLDER_ID` | The Drive folder submissions go into. |
-| `GOOGLE_OAUTH_CLIENT_ID` | OAuth client for `oauth` mode. |
+| `TOKEN_ENCRYPTION_KEY` | Encrypts the Google refresh tokens stored for each lecturer. 32 bytes, base64. |
+| `ADMIN_EMAILS` | Comma-separated Google emails of the admins. Admins can always sign in, approve lecturers and manage cohorts on `/admin`. |
+| `GOOGLE_OAUTH_CLIENT_ID` | The app's Google OAuth client ("Web application"). See [Google setup](#google-setup). |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | Its secret. |
-| `GOOGLE_OAUTH_REFRESH_TOKEN` | Printed by `node scripts/google-auth.mjs`. |
+| `NEXT_PUBLIC_GOOGLE_API_KEY` | An API key for the Google Picker, which lecturers use to pick their sheet. |
+| `NEXT_PUBLIC_GOOGLE_APP_ID` | The Google Cloud project **number** (not its ID). The Picker needs it to give the app access to the picked sheet. |
+| `GOOGLE_DRIVE_FOLDER_ID` | Only when upgrading from the single-lecturer version: its submissions folder, handed to the first admin who signs in. Remove it afterwards. |
 | `APP_TIMEZONE` | The time zone deadlines are entered and shown in. Default `Africa/Freetown`. |
 
-Generate the two secrets with:
+Generate the three secrets with:
 
 ```bash
 openssl rand -base64 32
 ```
 
-Use a different value for each. Changing `AUTH_SECRET` signs the lecturer out; changing `QR_SECRET` invalidates any QR code currently on screen.
+Use a different value for each. Changing `AUTH_SECRET` signs every lecturer out; changing `QR_SECRET` invalidates any QR code currently on screen. **Never change `TOKEN_ENCRYPTION_KEY`** once lecturers have signed in: their stored Google access becomes unreadable and each of them has to reconnect.
 
-## Google Sheets setup
+## Google setup
 
-The app does not sign in as you. It uses a **service account**: a robot Google account with its own email address. You create one, give it a key, and share your spreadsheet with it like you would with a colleague. This takes about five minutes and is free.
+Every lecturer signs in with their own Google account. The same sign-in gives the app the `drive.file` permission: it can open only the spreadsheet the lecturer picks and the files it creates itself (the submissions folder), and nothing else in their Drive. You set this up once for the whole app, in one Google Cloud project. Allow about fifteen minutes.
 
-### 1. Create a Google Cloud project
+All of the permissions the app asks for are **non-sensitive**, so the app can be published to **Production** without Google's security review. Don't leave it in **Testing**: Google expires every refresh token after 7 days in Testing, and attendance and uploads would stop reaching lecturers' sheets and Drives until they signed in again. Who may sign in is controlled inside the app instead (see [Approving lecturers](#approving-lecturers)).
 
-1. Go to https://console.cloud.google.com and sign in.
-2. Open the project picker at the top of the page and choose **New project**.
-3. Name it (for example `attendance`) and press **Create**. Make sure it is the selected project before continuing.
+### 1. Create a project and turn on the APIs
 
-### 2. Turn on the Google Sheets API
+1. Open https://console.cloud.google.com/projectcreate and create a project, e.g. `attendance`. If you're upgrading from the single-lecturer version, **use the project you already have**: its submissions folder stays reachable only from the same project.
+2. Turn on these three APIs, pressing **Enable** on each:
+   - https://console.cloud.google.com/apis/library/sheets.googleapis.com
+   - https://console.cloud.google.com/apis/library/drive.googleapis.com
+   - https://console.cloud.google.com/apis/library/picker.googleapis.com
 
-1. Go to **APIs & Services → Library**.
-2. Search for **Google Sheets API**, open it, and press **Enable**.
+### 2. Set up the consent screen
 
-Without this step every request fails with "Google Sheets API has not been used in project … or it is disabled".
+Open https://console.cloud.google.com/auth/overview and press **Get started**.
 
-### 3. Create the service account
+1. **App name**: what lecturers see, e.g. `Attendance`. **User support email**: yours.
+2. **Audience**: **External** (lecturers use personal Gmail or another university's account). If every lecturer is on one Google Workspace domain, **Internal** also works and needs no publishing.
+3. **Contact information**: your email. Finish.
+4. Under **Data Access**, press **Add or remove scopes** and add `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile` and `.../auth/drive.file`. All four are listed as non-sensitive.
+5. Under **Audience**, press **Publish app** and confirm. With only non-sensitive scopes there is no review. Google may ask you to verify the app's name and logo (brand verification) before it shows them; until then sign-in still works.
 
-1. Go to **APIs & Services → Credentials**.
-2. Press **Create credentials → Service account**.
-3. Give it a name (for example `attendance-app`) and press **Create and continue**.
-4. Skip the optional role and user-access steps and press **Done**. The account needs no project roles; its only access will be the one spreadsheet you share with it.
+### 3. Create the OAuth client
 
-It now appears in the list with an address like:
+Open https://console.cloud.google.com/auth/clients and press **Create client**.
 
-```
-attendance-app@your-project-id.iam.gserviceaccount.com
-```
+1. **Application type**: **Web application**.
+2. **Authorized JavaScript origins**: your `APP_URL`, e.g. `https://attendance.example.com` and `http://localhost:3000`.
+3. **Authorized redirect URIs**: `APP_URL` followed by `/auth/google/callback`, e.g. `https://attendance.example.com/auth/google/callback` and `http://localhost:3000/auth/google/callback`.
+4. Press **Create**. Copy the **Client ID** into `GOOGLE_OAUTH_CLIENT_ID` and the **Client secret** into `GOOGLE_OAUTH_CLIENT_SECRET`.
 
-That address is your `GOOGLE_SERVICE_ACCOUNT_EMAIL`.
+### 4. Create the Picker API key
 
-### 4. Download a key
+1. Open https://console.cloud.google.com/apis/credentials, press **Create credentials → API key**, and copy it into `NEXT_PUBLIC_GOOGLE_API_KEY`.
+2. Edit the key: under **Application restrictions** choose **Websites** and add your `APP_URL` (with `/*`); under **API restrictions** allow only the **Google Picker API**. The key is visible in lecturers' browsers, so these restrictions matter.
+3. Open https://console.cloud.google.com/home/dashboard and copy the **Project number** into `NEXT_PUBLIC_GOOGLE_APP_ID`.
 
-1. Click the service account, open the **Keys** tab.
-2. Press **Add key → Create new key**, choose **JSON**, and press **Create**.
+### 5. Sign in and pick your sheet
 
-A `.json` file downloads. Treat it like a password: anyone who has it can edit every sheet shared with the account. Do not commit it or paste it into a chat.
+Put your Google email in `ADMIN_EMAILS`, restart the app, and sign in. The setup page opens the Google Picker: choose your attendance spreadsheet. Its classes load straight away. You can pick a different sheet later from **Sheet** in the menu.
 
-> If Google says key creation is disabled, your organisation enforces the `iam.disableServiceAccountKeyCreation` policy. Use a personal Google account for the Cloud project, or ask your admin for an exception.
+### Approving lecturers
 
-### 5. Share the spreadsheet with the service account
+On `/admin`, type a lecturer's Google email and press **Approve**. They can then sign in at `<APP_URL>/login` and pick their own sheet. **Remove access** stops them signing in at their next page load; their classes and records are kept.
 
-1. Open your attendance spreadsheet in Google Sheets.
-2. Press **Share**, paste the service account's email address, set it to **Editor**, and send.
+### Cohorts
 
-Editor is required because the app writes the 1s and 0s. Viewer is enough to sync the roster but every check-in will then fail to reach the sheet.
-
-### 6. Fill in the three variables
-
-**`GOOGLE_SHEET_ID`** is the long string in the spreadsheet's address, between `/d/` and `/edit`:
-
-```
-https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789/edit#gid=0
-                                       └──────────── this part ────────────┘
-```
-
-**`GOOGLE_SERVICE_ACCOUNT_EMAIL`** is the `client_email` value in the downloaded JSON file.
-
-**`GOOGLE_PRIVATE_KEY`** is the `private_key` value in the same file. Copy it exactly as it appears there: one long line, in double quotes, with the `\n` sequences left in.
-
-```bash
-GOOGLE_SHEET_ID=1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789
-GOOGLE_SERVICE_ACCOUNT_EMAIL=attendance-app@your-project-id.iam.gserviceaccount.com
-GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq...\n-----END PRIVATE KEY-----\n"
-```
-
-To print the key in the right form without copying by hand:
-
-```bash
-node -p "JSON.stringify(require('./your-key-file.json').private_key)"
-```
-
-Paste the output, quotes included, after `GOOGLE_PRIVATE_KEY=`.
-
-On a hosting dashboard (Vercel, Railway and so on), paste the key **without** the surrounding quotes. The app accepts it either with real line breaks or with literal `\n`.
-
-Restart the dev server after changing `.env.local`, then press **Sync roster** on the classes page. If your classes appear, all three values are right.
+A **cohort** groups the modules a set of students takes, across lecturers, e.g. `BSEM Year 1`. The admin creates cohorts on `/admin`. Each lecturer puts each module (class tab) in a cohort under **Edit** on the class page. Students choose their cohort on the submit page, then the module. A module without a cohort can still take attendance, but students can't find it to submit work.
 
 ### How the spreadsheet must be laid out
 
@@ -158,10 +130,11 @@ Student IDs must be 4 to 12 digits. The check-in page assumes they are `90500` f
 | Message | Cause | Fix |
 |---|---|---|
 | `Missing environment variable GOOGLE_…` | The variable is empty or the server was not restarted. | Fill it in and restart. |
-| `The caller does not have permission` | The sheet is not shared with the service account, or only as Viewer. | Share it as Editor (step 5). |
-| `Requested entity was not found` | `GOOGLE_SHEET_ID` is wrong. | Copy it again from the address bar. |
-| `Google Sheets API has not been used in project…` | The API is not enabled. | Step 2. Allow a minute after enabling. |
-| `error:1E08010C:DECODER routines::unsupported` or `invalid_grant` | The private key was mangled: missing quotes, missing `\n`, or cut short. | Paste it again using the `node -p` command above. |
+| `redirect_uri_mismatch` on Google's screen | The redirect URI on the OAuth client doesn't match `APP_URL`. | Add `APP_URL/auth/google/callback` exactly (step 3). |
+| "… isn't approved yet" on the sign-in page | The email isn't approved. | Approve it on `/admin`, or add it to `ADMIN_EMAILS`. |
+| `The caller does not have permission` or `Requested entity was not found` | The app can only open a sheet picked in the Picker. | Pick the sheet again from **Sheet**. Check `NEXT_PUBLIC_GOOGLE_APP_ID` is the project number. |
+| `Google Sheets API has not been used in project…` | The API is not enabled. | Step 1. Allow a minute after enabling. |
+| "The app can't reach your Google account" banner | The lecturer revoked access, or Google expired the token (e.g. the app was left in Testing). | Press **Reconnect Google**. Publish the app to Production (step 2). |
 | `No tabs named "Attn of …" were found` | No tab name starts with `Attn of`. | Rename the class tabs. |
 | `No "ID Number" header found; tab skipped.` | The header cell is spelled differently. | Rename it to `ID Number`. |
 | `Student … not found in "Attn of …"` | The student was removed from the sheet after checking in. | Add them back, then press **Retry sync**. |
@@ -172,126 +145,24 @@ Attendance is never lost when the sheet cannot be reached. It is saved in the lo
 
 On a class page, under **Assignments**, press **New item** and give it a title (for example `Assignment 1` or `Classwork - Week 5`), a type and a deadline. Open an item to see who has submitted, filter to who is missing, open their files in Drive, change the deadline, or close it.
 
-Students go to `<APP_URL>/submit`, choose their class, type the last four digits of their ID, pick the item and upload their files.
+Students go to `<APP_URL>/submit`, choose their class (cohort), type the last four digits of their ID, choose the module, pick the item and upload their files. Only modules in a [cohort](#cohorts) that have at least one item are offered.
 
 - **Files:** PDF, Word (`.docx`) or ZIP, up to 5 files of 200 MB each per submission. The files go from the student's browser straight to Google Drive, so Vercel's 4.5 MB request limit does not apply.
 - **One submission per item.** Once it is in, the student cannot replace it. The page tells them this before they submit.
 - **Late work** is accepted and marked `LATE`. The student is warned before uploading and told again on the confirmation. Lateness is judged by when the upload started. Moving the deadline re-checks every submission. **Close submissions** stops all further uploads.
-- **In Drive** the files are stored as `<root folder>/<CODE - module>/<item title>/<ID> - <Name> - <file name>`.
+- **In Drive** the files go to the lecturer's own Drive, as `Assignment Submissions/<CODE - module>/<item title>/<ID> - <Name> - <file name>`. The app creates the `Assignment Submissions` folder in their My Drive the first time it needs it.
 - **In the sheet** each class gets a `Subs of <CODE>` tab: `ID Number`, `Name`, then one column per item, holding the time each student submitted (`24 Oct 14:05`, or `LATE 26 Oct 09:12`). The app rebuilds this tab from its database after every submission, so **don't edit it by hand**; anything typed there is overwritten. If a write fails, the class and item pages say so and **Update sheet** retries.
 
-## Google Drive setup
+## Google Drive
 
-A service account cannot store files in a normal Google Drive: it has no storage of its own. So there are two ways to set this up.
-
-### Option A: your own Google Drive (personal Gmail works)
-
-The app signs in to Drive as you once and keeps a refresh token. It asks only for the `drive.file` permission, so it can see the folder it creates and the files it uploads, and nothing else in your Drive. Allow about ten minutes.
-
-Use the same Google Cloud project as the [Google Sheets setup](#google-sheets-setup). Its ID is the part of `GOOGLE_SERVICE_ACCOUNT_EMAIL` between `@` and `.iam`. In the links below, replace `PROJECT_ID` with it.
-
-#### 1. Turn on the Drive API
-
-Open `https://console.cloud.google.com/apis/library/drive.googleapis.com?project=PROJECT_ID` and press **Enable**.
-
-#### 2. Set up the consent screen
-
-This is what Google shows when you sign in. Open `https://console.cloud.google.com/auth/overview?project=PROJECT_ID`.
-
-1. If it asks you to get started, fill it in:
-   - App name: `Attendance`.
-   - **User support email**: your Gmail.
-   - Audience: **External**.
-   - **Developer contact email**: your Gmail.
-   - Agree to the policy and press **Create**.
-2. Go to **Audience** and press **Publish app**, then **Confirm**. The status should read **In production**.
-
-You do not need Google's verification. `drive.file` is a limited permission, so the app works for your own account without review; Google only warns that it is unverified when you sign in.
-
-**Don't leave the app in Testing.** In that state you get "Access blocked: … has not completed the Google verification process" unless your Gmail is listed under **Test users**. Even when it is listed, Google expires the refresh token after 7 days and uploads stop.
-
-#### 3. Create an OAuth client
-
-Open `https://console.cloud.google.com/auth/clients/create?project=PROJECT_ID`.
-
-1. Choose **Desktop app** as the application type. Name it `Attendance Drive` and press **Create**.
-2. If you chose **Web application** instead, add this exact address under **Authorised redirect URIs**, then press **Save**:
-
-   ```
-   http://127.0.0.1:53682
-   ```
-
-   The sign-in script always listens on that address. A Desktop app client accepts it without this step.
-3. Copy the **Client ID** and **Client secret** into `.env` (or `.env.local`):
-
-   ```
-   GOOGLE_OAUTH_CLIENT_ID=…apps.googleusercontent.com
-   GOOGLE_OAUTH_CLIENT_SECRET=…
-   ```
-
-#### 4. Sign in and create the folder
-
-```bash
-node scripts/google-auth.mjs
-```
-
-1. The script prints a Google sign-in link and waits. Open it in your browser.
-2. Sign in with the Google account that should hold the files.
-3. At "Google hasn't verified this app", choose **Advanced → Go to Attendance (unsafe)**. It is your own app.
-4. Allow access.
-5. The tab says "Signed in. You can close this tab and go back to the terminal."
-
-The script then creates an **Assignment Submissions** folder in your My Drive and prints:
-
-```
-GOOGLE_DRIVE_MODE=oauth
-GOOGLE_DRIVE_FOLDER_ID=…
-GOOGLE_OAUTH_REFRESH_TOKEN=…
-```
-
-Add those three lines to `.env`, along with `APP_TIMEZONE=Africa/Freetown` (or your time zone), and restart `npm run dev`. The refresh token is a password to your uploads folder: keep it out of git and out of chat messages.
-
-#### 5. Add the variables to Vercel
-
-Under **Settings → Environment Variables**, add these, then redeploy:
-
-- `GOOGLE_DRIVE_MODE`
-- `GOOGLE_DRIVE_FOLDER_ID`
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `GOOGLE_OAUTH_REFRESH_TOKEN`
-- `APP_TIMEZONE`
-
-#### 6. Check it
-
-1. On a class page, add an item with **New assignment**.
-2. Open `<APP_URL>/submit` and hand in a file as one of your students. Try one over 5 MB too.
-3. The file should appear in Drive under `Assignment Submissions/<CODE - module>/<item title>/`, and a `Subs of <CODE>` tab should appear in the spreadsheet.
-4. You can delete the item afterwards from its page, as long as nobody else has submitted.
-
-You can rename the folder or share it with colleagues, but don't move the files out of it. The app only sees what it created. If you remove the app's access in your Google account (**Security → Third-party access**), uploads fail until you run the script again.
-
-### Option B: a Workspace Shared Drive
-
-If your institution has Google Workspace with Shared Drives:
-
-1. Enable the **Google Drive API** as above.
-2. Add the service account's email to the Shared Drive as a **Content manager**.
-3. Make a folder in the Shared Drive and copy its ID from the address bar (`…/folders/<ID>`).
-4. Set `GOOGLE_DRIVE_MODE=shared` and `GOOGLE_DRIVE_FOLDER_ID=<ID>`. The `GOOGLE_OAUTH_…` variables are not needed.
+Nothing to set up beyond the [Google setup](#google-setup): each lecturer's sign-in already lets the app create and use its folder in their Drive.
 
 ### When something goes wrong
 
 | Message | Cause | Fix |
 |---|---|---|
-| `Error 400: redirect_uri_mismatch` when signing in | The OAuth client is a **Web application** without the script's address. | Add `http://127.0.0.1:53682` to its authorised redirect URIs (step 3), wait a few minutes, and open the link again. |
-| `Access blocked: … has not completed the Google verification process` | The consent screen is still in **Testing**. | Publish it (step 2). |
-| Google shows `500. That's an error.` while signing in | A consent screen change hasn't taken effect yet, or stale login cookies. | Wait about five minutes and open the link in a private window. Check the app name and both emails are filled in under **Branding**. |
-| `EADDRINUSE` when starting the script | An earlier run is still waiting on port 53682. | Stop it (Ctrl+C), or run with `GOOGLE_AUTH_PORT=53683` and add that address to the client instead. |
-| Students see "The upload did not go through" straight away | Drive is not set up, a variable is missing, or the server was not restarted. The server log has the detail. | Check the variables and restart. |
-| `invalid_grant` in the server log | The refresh token expired or access was removed. | Publish the consent screen (step 2), then run the script again and replace `GOOGLE_OAUTH_REFRESH_TOKEN`. |
-| `File not found` for the root folder | `GOOGLE_DRIVE_FOLDER_ID` is wrong, or the folder was not created by the script. | Use the ID the script printed. |
-| `Service Accounts do not have storage quota` | `GOOGLE_DRIVE_MODE=shared` with a folder in someone's My Drive. | Use a Shared Drive, or Option A. |
+| "The upload did not go through" for every student | The lecturer's Google access was revoked, or their Drive is full. | The lecturer signs in and presses **Reconnect Google**, or frees space. |
+| `File not found` for a folder | The lecturer deleted the `Assignment Submissions` folder or a class folder. | Restore it from the Drive trash. |
 
 ## Turso setup
 
@@ -349,7 +220,7 @@ Run it again whenever you pull changes that add files to `drizzle/`. It only app
 
 ### 5. Load your classes
 
-Restart the app, sign in, and press **Sync roster**. Classes and students are read from the Google Sheet into Turso. If they appear, the database is working.
+Restart the app, sign in, and pick your sheet (or press **Sync roster**). Classes and students are read from the Google Sheet into Turso. If they appear, the database is working.
 
 Moving to Turso does not carry over what was in a local file: the roster comes back from the sheet, but past sessions and each class's start date do not.
 
@@ -385,7 +256,7 @@ ngrok http 3000
 
 Set `APP_URL` to the `https://…` address ngrok prints and restart `npm run dev`. `next.config.ts` allows that host automatically; without it, pages opened through the tunnel in dev mode load but their buttons do nothing.
 
-The tunnel address changes each time on the free plan, so update `APP_URL` when it does.
+The tunnel address changes each time on the free plan, so update `APP_URL` when it does. Google sign-in only returns to addresses listed on the OAuth client, so add the tunnel's origin and `/auth/google/callback` address there too (step 3 of [Google setup](#google-setup)), or sign in at `http://localhost:3000` and use the tunnel only for students' phones.
 
 ## Running it for a class
 
@@ -401,9 +272,16 @@ Use the production build for real sessions; it is faster and has none of the dev
 Vercel has no disk that persists, so do the [Turso setup](#turso-setup) first.
 
 1. Import the GitHub repository at https://vercel.com/new.
-2. Add every variable from the table above under **Settings → Environment Variables**, except `DATABASE_PATH`. Paste `GOOGLE_PRIVATE_KEY` without the surrounding quotes.
-3. Set `APP_URL` to the deployment's public `https://` address, then redeploy so the QR codes point at it.
-4. Sign in and press **Sync roster**.
+2. Add every variable from the table above under **Settings → Environment Variables**, except `DATABASE_PATH`.
+3. Set `APP_URL` to the deployment's public `https://` address, add it to the OAuth client's origins and redirect URIs, then redeploy so the QR codes point at it.
+4. Sign in and pick your sheet.
+
+### Upgrading from the single-lecturer version
+
+1. Run `npm run db:migrate`. Existing classes, students, sessions and submissions are kept and set aside for the first admin.
+2. Do the [Google setup](#google-setup) in the **same** Google Cloud project as before, and set `GOOGLE_DRIVE_FOLDER_ID` to the old submissions folder.
+3. Sign in with an `ADMIN_EMAILS` account. That account takes over the existing data and folder. Pick the same spreadsheet in the Picker; its tabs match the existing classes.
+4. Remove `LECTURER_PASSWORD`, `GOOGLE_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `GOOGLE_DRIVE_MODE`, `GOOGLE_OAUTH_REFRESH_TOKEN` and `GOOGLE_DRIVE_FOLDER_ID`. The service account is no longer used.
 
 Things to know:
 
@@ -421,7 +299,6 @@ Things to know:
 | `npm run lint` | ESLint |
 | `npm run db:migrate` | Apply migrations to Turso, or to the local file when Turso is not set |
 | `npm run db:generate` | Generate a migration after editing `lib/db/schema.ts` |
-| `node scripts/google-auth.mjs` | One-time Google Drive sign-in for submissions (see [Google Drive setup](#google-drive-setup)) |
 
 ## Project layout
 
@@ -429,14 +306,18 @@ Things to know:
 app/a/               Student check-in (plain HTML route)
 app/submit/          Student assignment submission
 app/api/submit/      Submission lookup, upload start and confirm
-app/(lecturer)/      Classes, live session, class history, student summary
-app/login/           Lecturer sign-in
+app/(lecturer)/      Classes, live session, class history, student summary,
+                     sheet setup and admin
+app/login/           Lecturer sign-in page
+app/auth/google/     Google sign-in redirect and callback
 app/api/sessions/    QR refresh and live-count polling
 components/ui/       Buttons, notices, icons and other shared pieces
 lib/sheets/          Google Sheets client, tab parser, roster sync, write queue
 lib/checkin.ts       Check-in rules
 lib/submissions.ts   Submission rules
-lib/google/drive.ts  Google Drive client (resumable uploads)
+lib/google/          Google sign-in, per-lecturer clients, Drive (resumable uploads)
+lib/lecturers.ts     Who may sign in; lecturer accounts
+lib/data/ownership.ts  Which lecturer owns a class, session, item or submission
 lib/token.ts         Signed QR tokens and passes
 lib/db/              Schema and database client
 drizzle/             SQL migrations

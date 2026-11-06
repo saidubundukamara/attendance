@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import { assignments, classes, enrollments, students } from "@/lib/db/schema";
 import { classCodeFromTab, type ParsedTab } from "./parse";
@@ -20,10 +20,12 @@ export type RosterSyncReport = {
   classes: ClassSyncReport[];
 };
 
-// Writes parsed tabs into the database. The sheet is the roster: students in
-// a tab become active enrollments, students missing from it become inactive.
+// Writes one lecturer's parsed tabs into the database. The sheet is the
+// roster: students in a tab become active enrollments, students missing from
+// it become inactive.
 export async function applyRoster(
   db: Db,
+  lecturerId: number,
   tabs: { title: string; parsed: ParsedTab }[],
   now: number = Date.now(),
 ): Promise<RosterSyncReport> {
@@ -60,6 +62,7 @@ export async function applyRoster(
       const classRow = await tx
         .insert(classes)
         .values({
+          lecturerId,
           code,
           sheetTab: title,
           moduleName: parsed.moduleName,
@@ -69,7 +72,7 @@ export async function applyRoster(
           lastSyncedAt: now,
         })
         .onConflictDoUpdate({
-          target: classes.code,
+          target: [classes.lecturerId, classes.code],
           set: {
             sheetTab: title,
             moduleName: parsed.moduleName,
@@ -103,12 +106,13 @@ export async function applyRoster(
           .insert(students)
           .values(
             parsed.students.map((student) => ({
+              lecturerId,
               studentId: student.studentId,
               name: student.name,
             })),
           )
           .onConflictDoUpdate({
-            target: students.studentId,
+            target: [students.lecturerId, students.studentId],
             // A blank name in the sheet does not erase a known one.
             set: {
               name: sql`CASE WHEN excluded.name <> '' THEN excluded.name ELSE students.name END`,
@@ -162,6 +166,7 @@ export async function applyRoster(
 // is due to.
 export async function classesNeedingSubsSync(
   db: Db,
+  lecturerId: number,
   report: RosterSyncReport,
 ): Promise<number[]> {
   const codes = report.classes
@@ -172,7 +177,9 @@ export async function classesNeedingSubsSync(
     .selectDistinct({ id: classes.id })
     .from(classes)
     .innerJoin(assignments, eq(assignments.classId, classes.id))
-    .where(inArray(classes.code, codes))
+    .where(
+      and(eq(classes.lecturerId, lecturerId), inArray(classes.code, codes)),
+    )
     .all();
   return rows.map((r) => r.id);
 }

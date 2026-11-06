@@ -2,7 +2,8 @@
 import { after } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { googleDrive } from "@/lib/google/drive";
+import { lecturerOfSubmission } from "@/lib/data/ownership";
+import { driveFor } from "@/lib/google/drive";
 import { getClientIp } from "@/lib/request";
 import { scheduleSubmissionsSync } from "@/lib/sheets/sync";
 import { MAX_FILES } from "@/lib/submission-files";
@@ -25,7 +26,9 @@ const schema = z.object({
 export async function POST(request: Request) {
   const body = await readJson(request, schema);
   if (!body) return json({ code: "BAD_REQUEST" }, 400);
-  const result = await completeSubmission(db, googleDrive, {
+  const lecturer = await lecturerOfSubmission(db, body.submissionId);
+  if (!lecturer?.refreshTokenEnc) return json({ code: "EXPIRED" });
+  const result = await completeSubmission(db, driveFor(lecturer), {
     ...body,
     ip: await getClientIp(),
   });

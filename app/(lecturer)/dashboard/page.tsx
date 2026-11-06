@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { ArrowBadge, buttonClass } from "@/components/ui/button";
 import { LiveDot } from "@/components/ui/status";
@@ -16,11 +17,12 @@ import { SyncRosterButton } from "./sync-roster-button";
 export const metadata = { title: "Classes — Attendance" };
 
 export default async function DashboardPage() {
-  await requireLecturer();
-  const classes = await getDashboardClasses();
+  const lecturer = await requireLecturer();
+  if (!lecturer.sheetId) redirect("/setup");
+  const classes = await getDashboardClasses(lecturer.id);
   const today = new Date();
-  const sync = await getSyncStatus(db);
-  if (sync.stalled) after(() => retryStalledSync());
+  const sync = await getSyncStatus(db, lecturer.id);
+  if (sync.stalled) after(() => retryStalledSync(lecturer.id));
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -42,7 +44,7 @@ export default async function DashboardPage() {
         <div className="mt-16 animate-rise">
           <p className="text-xl font-medium">No classes yet</p>
           <p className="mt-2 max-w-md text-muted">
-            Classes come from the tabs of your Google Sheet. Press{" "}
+            Classes come from the “Attn of …” tabs of your Google Sheet. Press{" "}
             <span className="font-medium text-ink">Sync roster</span> to load
             them along with their students.
           </p>
@@ -92,6 +94,14 @@ export default async function DashboardPage() {
                       className="mt-2 inline-block text-sm font-medium text-warn underline-offset-4 hover:underline"
                     >
                       Set a start date to get the week suggested
+                    </Link>
+                  )}
+                  {cls.cohortId === null && (
+                    <Link
+                      href={`/classes/${cls.id}`}
+                      className="mt-2 block text-sm font-medium text-warn underline-offset-4 hover:underline"
+                    >
+                      Put it in a cohort so students can submit work
                     </Link>
                   )}
                 </div>

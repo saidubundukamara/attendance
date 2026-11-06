@@ -20,6 +20,8 @@ export const config = {
     "/classes/:path*",
     "/sessions/:path*",
     "/students/:path*",
+    "/setup/:path*",
+    "/admin/:path*",
     "/api/sessions/:path*",
   ],
 };
