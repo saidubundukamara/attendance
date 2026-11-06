@@ -1,4 +1,4 @@
-import { isLecturer } from "@/lib/auth";
+import { getSignedInLecturer } from "@/lib/auth";
 import { getSessionStatus } from "@/lib/data/sessions";
 import { buildSessionQr } from "@/lib/qr";
 
@@ -7,11 +7,12 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
-  if (!(await isLecturer())) {
+  const lecturer = await getSignedInLecturer();
+  if (!lecturer) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   const { sessionId } = await params;
-  const session = await getSessionStatus(sessionId);
+  const session = await getSessionStatus(lecturer.id, sessionId);
   if (!session) {
     return Response.json({ error: "Session not found" }, { status: 404 });
   }

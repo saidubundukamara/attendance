@@ -13,7 +13,7 @@ import {
 } from "@/lib/db/schema";
 import { closeSession, openSession } from "@/lib/sessions";
 import { signPass } from "@/lib/token";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 
 const NOW = 1_800_000_000_000;
 let db: Db;
@@ -30,7 +30,7 @@ beforeEach(async () => {
   classId = (
     await db
       .insert(classes)
-      .values({ code: "TEST101", sheetTab: "Attn of TEST101" })
+      .values({ lecturerId: LECTURER, code: "TEST101", sheetTab: "Attn of TEST101" })
       .returning()
       .get()
   ).id;
@@ -39,7 +39,7 @@ beforeEach(async () => {
     const id = (
       await db
         .insert(students)
-        .values({ studentId, name: `Student ${studentId.slice(-1)}` })
+        .values({ lecturerId: LECTURER, studentId, name: `Student ${studentId.slice(-1)}` })
         .returning()
         .get()
     ).id;

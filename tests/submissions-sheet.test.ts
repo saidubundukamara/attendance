@@ -5,7 +5,7 @@ import {
   buildSubmissionsGrid,
   writeSubmissionsTab,
 } from "@/lib/sheets/submissions";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 
 const at = Date.UTC(2026, 9, 24, 14, 5);
 
@@ -44,7 +44,7 @@ describe("writeSubmissionsTab overlapping runs", () => {
     const classId = (
       await db
         .insert(classes)
-        .values({ code: "TEST101", sheetTab: "Attn of TEST101" })
+        .values({ lecturerId: LECTURER, code: "TEST101", sheetTab: "Attn of TEST101" })
         .returning()
         .get()
     ).id;

@@ -83,7 +83,7 @@ export async function ensureAssignmentFolder(
   if (!classFolderId) {
     const created = await drive.createFolder(
       classFolderName(row),
-      drive.rootFolderId(),
+      await drive.rootFolderId(),
     );
     await db
       .update(classes)

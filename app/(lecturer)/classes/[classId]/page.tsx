@@ -18,8 +18,12 @@ import { SettingsForm } from "./settings-form";
 
 type Props = { params: Promise<{ classId: string }> };
 
+// Only the signed-in lecturer's own classes.
 async function loadClass(classId: string) {
-  return /^\d+$/.test(classId) ? await getClass(Number(classId)) : null;
+  const lecturer = await requireLecturer();
+  return /^\d+$/.test(classId)
+    ? await getClass(lecturer.id, Number(classId))
+    : null;
 }
 
 export async function generateMetadata({ params }: Props) {
@@ -30,7 +34,6 @@ export async function generateMetadata({ params }: Props) {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export default async function ClassPage({ params }: Props) {
-  await requireLecturer();
   const cls = await loadClass((await params).classId);
   const history = cls ? await getClassHistory(db, cls.id) : null;
   if (!cls || !history) notFound();

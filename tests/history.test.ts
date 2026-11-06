@@ -14,7 +14,7 @@ import {
   syncJobs,
 } from "@/lib/db/schema";
 import { closeSession, openSession, recordPastWeek } from "@/lib/sessions";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 
 let db: Db;
 let classA: number;
@@ -29,7 +29,7 @@ beforeEach(async () => {
         (
           await db
             .insert(classes)
-            .values({ code, sheetTab: `Attn of ${code}`, totalWeeks: 4 })
+            .values({ lecturerId: LECTURER, code, sheetTab: `Attn of ${code}`, totalWeeks: 4 })
             .returning()
             .get()
         ).id,
@@ -42,7 +42,7 @@ beforeEach(async () => {
     ["900000003", "Chidi"],
   ]) {
     ids[studentId] = (
-      await db.insert(students).values({ studentId, name }).returning().get()
+      await db.insert(students).values({ lecturerId: LECTURER, studentId, name }).returning().get()
     ).id;
     await db
       .insert(enrollments)
@@ -125,7 +125,7 @@ describe("getClassHistory", () => {
     await db.update(enrollments).set({ active: false }).run();
     await db
       .insert(students)
-      .values({ studentId: "900000004", name: "Dayo" })
+      .values({ lecturerId: LECTURER, studentId: "900000004", name: "Dayo" })
       .run();
     const history = (await getClassHistory(db, classA))!;
     expect(history.activeCount).toBe(0);
@@ -217,7 +217,7 @@ describe("getStudentSummary", () => {
     await recordPastWeek(db, classA, 4);
     await takeWeek(classB, 1, ["900000001"]);
 
-    const bola = (await getStudentSummary(db, "900000002"))!;
+    const bola = (await getStudentSummary(db, LECTURER, "900000002"))!;
     expect(bola).toMatchObject({ studentId: "900000002", name: "Bola" });
     expect(bola.classes).toEqual([
       {
@@ -237,7 +237,7 @@ describe("getStudentSummary", () => {
       },
     ]);
 
-    const ama = (await getStudentSummary(db, "900000001"))!;
+    const ama = (await getStudentSummary(db, LECTURER, "900000001"))!;
     expect(
       ama.classes.map((c) => [c.code, c.present, c.absent, c.percent]),
     ).toEqual([
@@ -247,6 +247,6 @@ describe("getStudentSummary", () => {
   });
 
   it("returns null for an unknown ID", async () => {
-    expect(await getStudentSummary(db, "123456")).toBeNull();
+    expect(await getStudentSummary(db, LECTURER, "123456")).toBeNull();
   });
 });

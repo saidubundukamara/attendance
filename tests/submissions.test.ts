@@ -19,7 +19,7 @@ import {
   startSubmission,
   UPLOAD_WINDOW_MS,
 } from "@/lib/submissions";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -38,7 +38,7 @@ function fakeDrive() {
   const files = new Map<string, DriveFile>();
   const sessions = new Map<string, { name: string; parentId: string; size: number }>();
   const io: DriveIo = {
-    rootFolderId: () => "root",
+    rootFolderId: async () => "root",
     createFolder: async (name) => `folder-${++next}-${name}`,
     renameFolder: async () => {},
     createUploadSession: async ({ name, parentId, size }) => {
@@ -78,20 +78,20 @@ beforeEach(async () => {
   classId = (
     await db
       .insert(classes)
-      .values({ code: "TEST101", sheetTab: "Attn of TEST101" })
+      .values({ lecturerId: LECTURER, code: "TEST101", sheetTab: "Attn of TEST101" })
       .returning()
       .get()
   ).id;
   otherClassId = (
     await db
       .insert(classes)
-      .values({ code: "OTHER1", sheetTab: "Attn of OTHER1" })
+      .values({ lecturerId: LECTURER, code: "OTHER1", sheetTab: "Attn of OTHER1" })
       .returning()
       .get()
   ).id;
   const add = async (studentId: string, name: string, cls: number, active = true) => {
     const id = (
-      await db.insert(students).values({ studentId, name }).returning().get()
+      await db.insert(students).values({ lecturerId: LECTURER, studentId, name }).returning().get()
     ).id;
     await db.insert(enrollments).values({ classId: cls, studentId: id, active }).run();
   };
@@ -423,7 +423,7 @@ describe("group work", () => {
       ["905006666", "Dan Koroma"],
     ]) {
       const id = (
-        await db.insert(students).values({ studentId, name }).returning().get()
+        await db.insert(students).values({ lecturerId: LECTURER, studentId, name }).returning().get()
       ).id;
       await db.insert(enrollments).values({ classId, studentId: id }).run();
       ids[name] = id;

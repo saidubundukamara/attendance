@@ -66,7 +66,12 @@ function cellEquals(cell: unknown, value: number): boolean {
 export async function processSyncJobs(
   db: Db,
   io: SheetIo,
-  options: { includeExhausted?: boolean; now?: () => number } = {},
+  options: {
+    includeExhausted?: boolean;
+    now?: () => number;
+    // Only this lecturer's classes: `io` reaches only their sheet.
+    lecturerId?: number;
+  } = {},
 ): Promise<SyncSummary> {
   const now = options.now ?? Date.now;
   const summary: SyncSummary = { done: 0, failed: 0, deferred: 0, errors: [] };
@@ -84,7 +89,15 @@ export async function processSyncJobs(
     await db
       .selectDistinct({ classId: syncJobs.classId })
       .from(syncJobs)
-      .where(waiting)
+      .innerJoin(classes, eq(classes.id, syncJobs.classId))
+      .where(
+        and(
+          waiting,
+          options.lecturerId === undefined
+            ? undefined
+            : eq(classes.lecturerId, options.lecturerId),
+        ),
+      )
       .all()
   ).map((row) => row.classId);
   if (classIds.length === 0) return summary;
@@ -302,14 +315,20 @@ export type SyncStatus = {
 // A healthy sync finishes well inside this.
 export const STALLED_AFTER_MS = 20_000;
 
+// The lecturer's queue of entries waiting to reach their sheet.
 export async function getSyncStatus(
   db: Db,
+  lecturerId: number,
   now: number = Date.now(),
 ): Promise<SyncStatus> {
+  const mine = and(
+    ne(syncJobs.status, "DONE"),
+    sql`${syncJobs.classId} IN (SELECT ${classes.id} FROM ${classes} WHERE ${classes.lecturerId} = ${lecturerId})`,
+  );
   const queue = await db
     .select({ value: count(), oldest: min(syncJobs.createdAt) })
     .from(syncJobs)
-    .where(ne(syncJobs.status, "DONE"))
+    .where(mine)
     .get();
   const pending = queue?.value ?? 0;
   const lastError = pending
@@ -317,9 +336,7 @@ export async function getSyncStatus(
         await db
           .select({ lastError: syncJobs.lastError })
           .from(syncJobs)
-          .where(
-            and(ne(syncJobs.status, "DONE"), isNotNull(syncJobs.lastError)),
-          )
+          .where(and(mine, isNotNull(syncJobs.lastError)))
           .orderBy(desc(syncJobs.id))
           .limit(1)
           .get()

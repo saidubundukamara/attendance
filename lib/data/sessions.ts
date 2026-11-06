@@ -9,15 +9,16 @@ import {
 } from "@/lib/db/schema";
 import { getSyncStatus, type SyncStatus } from "@/lib/sheets/write";
 
-export async function getSessionStatus(sessionId: string) {
+export async function getSessionStatus(lecturerId: number, sessionId: string) {
   return db
     .select({ id: sessions.id, status: sessions.status })
     .from(sessions)
-    .where(eq(sessions.id, sessionId))
+    .innerJoin(classes, eq(classes.id, sessions.classId))
+    .where(and(eq(sessions.id, sessionId), eq(classes.lecturerId, lecturerId)))
     .get();
 }
 
-export async function getSessionView(sessionId: string) {
+export async function getSessionView(lecturerId: number, sessionId: string) {
   const row = await db
     .select({
       id: sessions.id,
@@ -31,7 +32,7 @@ export async function getSessionView(sessionId: string) {
     })
     .from(sessions)
     .innerJoin(classes, eq(classes.id, sessions.classId))
-    .where(eq(sessions.id, sessionId))
+    .where(and(eq(sessions.id, sessionId), eq(classes.lecturerId, lecturerId)))
     .get();
   if (!row) return null;
 
@@ -86,12 +87,14 @@ export type LiveSession = {
 // Everything the session page polls for. Lists the current roster plus
 // anyone with a record who has since left the sheet.
 export async function getLiveSession(
+  lecturerId: number,
   sessionId: string,
 ): Promise<LiveSession | null> {
   const session = await db
     .select({ status: sessions.status, classId: sessions.classId })
     .from(sessions)
-    .where(eq(sessions.id, sessionId))
+    .innerJoin(classes, eq(classes.id, sessions.classId))
+    .where(and(eq(sessions.id, sessionId), eq(classes.lecturerId, lecturerId)))
     .get();
   if (!session) return null;
 
@@ -144,6 +147,6 @@ export async function getLiveSession(
     present: list.filter((student) => student.status === "PRESENT").length,
     total: roster.filter((student) => student.active).length,
     students: list,
-    sync: await getSyncStatus(db),
+    sync: await getSyncStatus(db, lecturerId),
   };
 }

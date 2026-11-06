@@ -20,7 +20,7 @@ import {
 import { closeSession, openSession } from "@/lib/sessions";
 import { expandStudentId, studentIdSuffix } from "@/lib/student-id";
 import { PASS_TTL_SECONDS, signPass, signQrToken } from "@/lib/token";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 
 const NOW = 1_800_000_000_000;
 let db: Db;
@@ -39,7 +39,7 @@ beforeEach(async () => {
         (
           await db
             .insert(classes)
-            .values({ code, sheetTab: `Attn of ${code}`, totalWeeks: 15 })
+            .values({ lecturerId: LECTURER, code, sheetTab: `Attn of ${code}`, totalWeeks: 15 })
             .returning()
             .get()
         ).id,
@@ -49,7 +49,7 @@ beforeEach(async () => {
     const id = (
       await db
         .insert(students)
-        .values({ studentId, name: `Student ${studentId.slice(-1)}` })
+        .values({ lecturerId: LECTURER, studentId, name: `Student ${studentId.slice(-1)}` })
         .returning()
         .get()
     ).id;
@@ -158,7 +158,7 @@ describe("checkIn", () => {
     const id = (
       await db
         .insert(students)
-        .values({ studentId: "905005069", name: "Student 9" })
+        .values({ lecturerId: LECTURER, studentId: "905005069", name: "Student 9" })
         .returning()
         .get()
     ).id;

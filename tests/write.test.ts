@@ -11,7 +11,7 @@ import {
   type CellWrite,
   type SheetIo,
 } from "@/lib/sheets/write";
-import { createTestDb } from "./helpers/db";
+import { LECTURER, createTestDb } from "./helpers/db";
 import { buildTab } from "./helpers/sheet";
 
 const TAB = "Attn of TEST101";
@@ -28,7 +28,7 @@ beforeEach(async () => {
   classId = (
     await db
       .insert(classes)
-      .values({ code: "TEST101", sheetTab: TAB })
+      .values({ lecturerId: LECTURER, code: "TEST101", sheetTab: TAB })
       .returning()
       .get()
   ).id;
@@ -178,7 +178,7 @@ describe("processSyncJobs", () => {
       expect(summary).toMatchObject({ done: 0, deferred: 1 });
     }
     expect((await jobs())[0]).toMatchObject({ status: "PENDING", attempts: 0 });
-    expect(await getSyncStatus(db)).toEqual({
+    expect(await getSyncStatus(db, LECTURER)).toEqual({
       pending: 1,
       lastError: `Could not read "${TAB}": network down`,
       stalled: true,
@@ -186,7 +186,7 @@ describe("processSyncJobs", () => {
 
     readError = null;
     expect((await processSyncJobs(db, io)).done).toBe(1);
-    expect(await getSyncStatus(db)).toEqual({
+    expect(await getSyncStatus(db, LECTURER)).toEqual({
       pending: 0,
       lastError: null,
       stalled: false,
@@ -205,11 +205,11 @@ describe("processSyncJobs", () => {
         createdAt: 1000,
       })
       .run();
-    expect(await getSyncStatus(db, 3000)).toMatchObject({
+    expect(await getSyncStatus(db, LECTURER, 3000)).toMatchObject({
       pending: 1,
       stalled: false,
     });
-    expect(await getSyncStatus(db, 60_000)).toMatchObject({
+    expect(await getSyncStatus(db, LECTURER, 60_000)).toMatchObject({
       pending: 1,
       stalled: true,
     });
@@ -231,7 +231,7 @@ describe("processSyncJobs", () => {
     await queue("900000777", 1);
     for (let i = 0; i < MAX_ATTEMPTS + 3; i++) await processSyncJobs(db, io);
     expect((await jobs())[0].attempts).toBe(MAX_ATTEMPTS);
-    expect((await getSyncStatus(db)).pending).toBe(1);
+    expect((await getSyncStatus(db, LECTURER)).pending).toBe(1);
 
     // The student is added to the sheet, then the lecturer clicks Retry.
     sheet.push(["", 4, "Late Joiner", 900000777, ...Array(15).fill(0), 0]);
@@ -244,7 +244,7 @@ describe("processSyncJobs", () => {
     const other = (
       await db
         .insert(classes)
-        .values({ code: "TEST202", sheetTab: "Attn of TEST202" })
+        .values({ lecturerId: LECTURER, code: "TEST202", sheetTab: "Attn of TEST202" })
         .returning()
         .get()
     ).id;

@@ -9,12 +9,60 @@ import {
 
 // Timestamps are Unix milliseconds. Booleans are 0/1.
 
-export const classes = sqliteTable("classes", {
+// A lecturer who signs in with Google. Each one has their own sheet, Drive
+// folder, classes and students; nothing is shared between lecturers.
+export const lecturers = sqliteTable("lecturers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  // From the sheet tab name, e.g. "BSEM1201".
-  code: text("code").notNull().unique(),
+  // Lower-cased. Null only on the row the migration made for the data of
+  // the single-lecturer version, until an admin signs in and claims it.
+  email: text("email").unique(),
+  name: text("name").notNull().default(""),
+  // Google's stable account id ("sub" in the ID token).
+  googleSub: text("google_sub").unique(),
+  // AES-GCM encrypted; see lib/crypto.ts.
+  refreshTokenEnc: text("refresh_token_enc"),
+  // The attendance spreadsheet picked during setup.
+  sheetId: text("sheet_id"),
+  sheetName: text("sheet_name"),
+  // Root "Assignment Submissions" folder in the lecturer's Drive.
+  driveFolderId: text("drive_folder_id"),
+  // Set when Google refuses the stored token (revoked, expired); cleared on
+  // the next sign-in. The lecturer is asked to reconnect while it is set.
+  authError: text("auth_error"),
+  createdAt: integer("created_at").notNull(),
+  lastLoginAt: integer("last_login_at"),
+});
+
+// Emails the admin has approved to sign in.
+export const allowedEmails = sqliteTable("allowed_emails", {
+  // Lower-cased.
+  email: text("email").primaryKey(),
+  addedAt: integer("added_at").notNull(),
+});
+
+// A group of students taking modules together, e.g. "BSEM Year 1". Groups
+// modules from different lecturers so a student can find all of theirs on
+// the submit page. Managed by the admin.
+export const cohorts = sqliteTable("cohorts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull().unique(),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const classes = sqliteTable(
+  "classes",
+  {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  lecturerId: integer("lecturer_id")
+    .notNull()
+    .references(() => lecturers.id),
+  // Null until the lecturer picks one; students only find the module on
+  // the submit page once it has a cohort.
+  cohortId: integer("cohort_id").references(() => cohorts.id),
+  // From the sheet tab name, e.g. "BSEM1201". Unique per lecturer.
+  code: text("code").notNull(),
   // Full tab title, e.g. "Attn of BSEM1201".
-  sheetTab: text("sheet_tab").notNull().unique(),
+  sheetTab: text("sheet_tab").notNull(),
   moduleName: text("module_name"),
   moduleCode: text("module_code"),
   // ISO date (YYYY-MM-DD); null until the lecturer sets it.
@@ -35,14 +83,31 @@ export const classes = sqliteTable("classes", {
   submissionsSyncRequested: integer("submissions_sync_requested")
     .notNull()
     .default(0),
-});
+  },
+  (t) => [
+    uniqueIndex("classes_lecturer_code_uq").on(t.lecturerId, t.code),
+    uniqueIndex("classes_lecturer_tab_uq").on(t.lecturerId, t.sheetTab),
+    index("classes_cohort_idx").on(t.cohortId),
+  ],
+);
 
-export const students = sqliteTable("students", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  // The ID printed in the sheet, always compared as a string.
-  studentId: text("student_id").notNull().unique(),
-  name: text("name").notNull(),
-});
+// One lecturer's record of a student, from their sheet. The same person in
+// two lecturers' sheets is two rows.
+export const students = sqliteTable(
+  "students",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    lecturerId: integer("lecturer_id")
+      .notNull()
+      .references(() => lecturers.id),
+    // The ID printed in the sheet, always compared as a string.
+    studentId: text("student_id").notNull(),
+    name: text("name").notNull(),
+  },
+  (t) => [
+    uniqueIndex("students_lecturer_student_uq").on(t.lecturerId, t.studentId),
+  ],
+);
 
 export const enrollments = sqliteTable(
   "enrollments",

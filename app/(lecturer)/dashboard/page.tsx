@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { ArrowBadge, buttonClass } from "@/components/ui/button";
 import { LiveDot } from "@/components/ui/status";
@@ -16,11 +17,12 @@ import { SyncRosterButton } from "./sync-roster-button";
 export const metadata = { title: "Classes — Attendance" };
 
 export default async function DashboardPage() {
-  await requireLecturer();
-  const classes = await getDashboardClasses();
+  const lecturer = await requireLecturer();
+  if (!lecturer.sheetId) redirect("/setup");
+  const classes = await getDashboardClasses(lecturer.id);
   const today = new Date();
-  const sync = await getSyncStatus(db);
-  if (sync.stalled) after(() => retryStalledSync());
+  const sync = await getSyncStatus(db, lecturer.id);
+  if (sync.stalled) after(() => retryStalledSync(lecturer.id));
 
   return (
     <div className="mx-auto max-w-3xl">

@@ -9,6 +9,7 @@ import {
   getDeviceCheckIn,
   isDeviceId,
 } from "@/lib/checkin";
+import { secureCookies } from "@/lib/auth";
 import { idErrorMessage, renderForm, renderResult } from "@/lib/checkin-page";
 import { db } from "@/lib/db";
 import { getClientIp } from "@/lib/request";
@@ -46,7 +47,7 @@ export async function GET(request: Request) {
     jar.set(DEVICE_COOKIE, deviceId, {
       httpOnly: true,
       sameSite: "lax",
-      secure: (process.env.APP_URL ?? "").startsWith("https://"),
+      secure: secureCookies(),
       path: "/",
       maxAge: ONE_YEAR_SECONDS,
     });
@@ -105,7 +106,10 @@ export async function POST(request: Request) {
   }
 
   // The student gets their answer first; the sheet is updated afterwards.
-  if (result.code === "OK") after(scheduleSheetSync);
+  if (result.code === "OK" && session) {
+    const lecturerId = session.lecturerId;
+    after(() => scheduleSheetSync(lecturerId));
+  }
 
   return html(renderResult(result.code, session, result.studentName));
 }

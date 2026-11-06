@@ -62,6 +62,7 @@ export async function getCheckInSession(db: Db, sessionId: string) {
       status: sessions.status,
       week: sessions.week,
       classId: classes.id,
+      lecturerId: classes.lecturerId,
       classCode: classes.code,
       moduleName: classes.moduleName,
     })

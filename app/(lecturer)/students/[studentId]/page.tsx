@@ -13,9 +13,9 @@ export default async function StudentPage({
 }: {
   params: Promise<{ studentId: string }>;
 }) {
-  await requireLecturer();
+  const lecturer = await requireLecturer();
   const { studentId } = await params;
-  const student = await getStudentSummary(db, studentId);
+  const student = await getStudentSummary(db, lecturer.id, studentId);
   if (!student) notFound();
 
   return (
