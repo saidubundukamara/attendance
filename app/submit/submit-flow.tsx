@@ -22,7 +22,12 @@ import {
   MAX_FILE_BYTES,
   MAX_FILES,
 } from "@/lib/submission-files";
-import type { LookupResult, StudentItem } from "@/lib/submissions";
+import type {
+  LookupResult,
+  ModuleOption,
+  ModulesResult,
+  StudentItem,
+} from "@/lib/submissions";
 import {
   formatDeadline,
   formatStamp,
@@ -30,7 +35,7 @@ import {
   type Urgency,
 } from "@/lib/timezone";
 
-type ClassOption = { id: number; code: string; moduleName: string | null };
+type CohortOption = { id: number; name: string };
 type Student = Extract<LookupResult, { code: "OK" }>["student"];
 type Done = {
   late: boolean;
@@ -115,15 +120,24 @@ const KIND_LABEL: Record<StudentItem["kind"], string> = {
 };
 
 export function SubmitFlow({
-  classes,
+  cohorts,
   timeZone,
 }: {
-  classes: ClassOption[];
+  cohorts: CohortOption[];
   timeZone: string;
 }) {
-  const [classId, setClassId] = useState<number | "">(
-    classes.length === 1 ? classes[0].id : "",
+  const [cohortId, setCohortId] = useState<number | "">(
+    cohorts.length === 1 ? cohorts[0].id : "",
   );
+  // The student's modules in the cohort, once their ID has been checked.
+  const [modules, setModules] = useState<ModuleOption[] | null>(null);
+  const [classId, setClassId] = useState<number | "">("");
+  // An item a shared link points at (?item=<id>), opened once its module's
+  // list has loaded.
+  const linkedItem = useRef<number | null>(null);
+  useEffect(() => {
+    linkedItem.current = itemFromUrl();
+  }, []);
   const [digits, setDigits] = useState("");
   const [student, setStudent] = useState<Student | null>(null);
   const [items, setItems] = useState<StudentItem[]>([]);
@@ -164,14 +178,16 @@ export function SubmitFlow({
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, [signedIn]);
-  const cls = classes.find((c) => c.id === classId);
+  const cls = modules?.find((m) => m.classId === classId);
 
   // Each step change starts at the top with focus on the step's heading, so
   // a screen reader announces where the student now is.
   const stepHeading = useRef<HTMLHeadingElement>(null);
-  const step = !student
+  const step = !modules
     ? null
-    : !item
+    : !student
+      ? "modules"
+      : !item
       ? "list"
       : done
         ? "done"
@@ -193,24 +209,39 @@ export function SubmitFlow({
 
   // An open item lives in the URL (?item=<id>) so the phone's Back gesture
   // returns to the list instead of leaving the page and the sign-in.
+  // Picking a module from several also gets a history entry, so Back from
+  // its list returns to the module list.
   const onPopState = useEffectEvent(() => {
     if (busy) {
       // Mid-upload: stay put rather than abandon the transfer.
-      if (item) window.history.pushState({ item: item.id }, "", `?item=${item.id}`);
+      if (item) {
+        window.history.pushState(
+          { module: classId, item: item.id },
+          "",
+          `?item=${item.id}`,
+        );
+      }
       return;
     }
     pick(null);
+    const state = window.history.state as { module?: number } | null;
+    if (!state?.module && modules && modules.length > 1) leaveModule();
   });
+  const pastCohort = modules !== null;
   useEffect(() => {
-    if (!signedIn) return;
+    if (!pastCohort) return;
     const handler = () => onPopState();
     window.addEventListener("popstate", handler);
     return () => window.removeEventListener("popstate", handler);
-  }, [signedIn]);
+  }, [pastCohort]);
 
   function open(next: StudentItem) {
     pick(next);
-    window.history.pushState({ item: next.id }, "", `?item=${next.id}`);
+    window.history.pushState(
+      { module: classId, item: next.id },
+      "",
+      `?item=${next.id}`,
+    );
   }
 
   function close() {
@@ -221,24 +252,64 @@ export function SubmitFlow({
     }
   }
 
-  async function lookup() {
-    if (classId === "") return;
+  // Step 1: cohort and ID, checked against every module in the cohort.
+  async function findModules() {
+    if (cohortId === "") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await post<ModulesResult & { message?: string }>(
+        "/api/submit/modules",
+        { cohortId, studentId: digits },
+      );
+      if (result.code !== "OK") {
+        setError(message(result));
+        return;
+      }
+      setModules(result.modules);
+      // Only one module: straight to its work, with no module list to go
+      // back to.
+      if (result.modules.length === 1) {
+        await chooseModule(result.modules[0].classId, false);
+      }
+    } catch {
+      setError(MESSAGES.UPLOAD_FAILED);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Step 2: the module's work.
+  async function chooseModule(id: number, remember = true) {
     setNow(Date.now());
     setBusy(true);
     setError(null);
     try {
       const result = await post<LookupResult & { message?: string }>(
         "/api/submit/lookup",
-        { classId, studentId: digits },
+        { classId: id, studentId: digits },
       );
       if (result.code === "OK") {
+        setClassId(id);
         setStudent(result.student);
         setItems(result.items);
+        if (remember) {
+          window.history.pushState({ module: id }, "", window.location.pathname);
+        } else {
+          window.history.replaceState(null, "", window.location.pathname);
+        }
         // A link to one item opens it once the student is known, with the
         // list underneath it in the history.
-        const linked = result.items.find((it) => it.id === itemFromUrl());
-        window.history.replaceState(null, "", window.location.pathname);
-        if (linked) open(linked);
+        const linked = result.items.find((it) => it.id === linkedItem.current);
+        if (linked) {
+          linkedItem.current = null;
+          pick(linked);
+          window.history.pushState(
+            { module: id, item: linked.id },
+            "",
+            `?item=${linked.id}`,
+          );
+        }
       } else {
         setError(message(result));
       }
@@ -249,11 +320,30 @@ export function SubmitFlow({
     }
   }
 
+  // Back to the module list, still signed in.
+  function leaveModule() {
+    setStudent(null);
+    setItems([]);
+    setClassId("");
+    pick(null);
+  }
+
+  function changeModule() {
+    if ((window.history.state as { module?: number } | null)?.module) {
+      // Pops to the module list; the popstate handler does the rest.
+      window.history.go(item ? -2 : -1);
+    } else {
+      leaveModule();
+    }
+  }
+
   function signOut() {
     window.history.replaceState(null, "", window.location.pathname);
+    setModules(null);
     setStudent(null);
     setItems([]);
     setItem(null);
+    setClassId("");
     setDigits("");
     setError(null);
   }
@@ -359,31 +449,31 @@ export function SubmitFlow({
     }
   }
 
-  // Step 1: class and ID.
-  if (!student) {
+  // Step 1: cohort and ID.
+  if (!modules) {
     return (
       <form
         className="mt-10 space-y-6"
         onSubmit={(event) => {
           event.preventDefault();
-          void lookup();
+          void findModules();
         }}
       >
         <div>
-          <Label htmlFor="class">Class</Label>
+          <Label htmlFor="cohort">Class</Label>
           <select
-            id="class"
+            id="cohort"
             required
-            value={classId}
+            value={cohortId}
             onChange={(e) =>
-              setClassId(e.target.value ? Number(e.target.value) : "")
+              setCohortId(e.target.value ? Number(e.target.value) : "")
             }
             className={`${inputClass} w-full`}
           >
             <option value="">Choose your class…</option>
-            {classes.map((c) => (
+            {cohorts.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.moduleName ? `${c.code} · ${c.moduleName}` : c.code}
+                {c.name}
               </option>
             ))}
           </select>
@@ -418,11 +508,67 @@ export function SubmitFlow({
           size="lg"
           arrow
           block
-          disabled={busy || classId === "" || digits.length !== 4}
+          disabled={busy || cohortId === "" || digits.length !== 4}
         >
           {busy ? "Checking…" : "Continue"}
         </Button>
       </form>
+    );
+  }
+
+  // Step 2: which module. Skipped when there is only one.
+  if (!student) {
+    return (
+      <div className="animate-rise">
+        <div
+          data-signed-in
+          className="mt-6 flex flex-wrap items-baseline justify-between gap-2 border-b border-line pb-4"
+        >
+          <p className="font-mono text-sm text-muted">
+            {STUDENT_ID_PREFIX}
+            {digits}
+          </p>
+          <button
+            type="button"
+            onClick={signOut}
+            className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
+          >
+            Not you?
+          </button>
+        </div>
+        <h2
+          ref={stepHeading}
+          tabIndex={-1}
+          className="mt-8 text-lg font-semibold tracking-tight outline-none"
+        >
+          Choose the module
+        </h2>
+        {error && (
+          <Notice tone="danger" role="alert" className="mt-4">
+            {error}
+          </Notice>
+        )}
+        <ul className="mt-4 space-y-3">
+          {modules.map((m) => (
+            <li key={m.classId}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void chooseModule(m.classId)}
+                className="group flex w-full items-center justify-between gap-4 rounded-2xl bg-surface p-5 text-left shadow-soft ring-1 ring-line transition-shadow duration-200 hover:ring-ink/30 disabled:opacity-60"
+              >
+                <span className="min-w-0">
+                  <span className="block font-semibold">{m.code}</span>
+                  <span className="block text-sm text-muted">
+                    {[m.moduleName, m.lecturerName].filter(Boolean).join(" · ")}
+                  </span>
+                </span>
+                <ArrowRight className="size-4 shrink-0 text-muted transition-transform duration-300 group-hover:translate-x-0.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     );
   }
 
@@ -438,15 +584,32 @@ export function SubmitFlow({
         <span className="ml-2 font-mono text-sm text-muted">
           {student.studentId}
         </span>
-        {cls && <span className="block text-sm text-muted">{cls.code}</span>}
+        {cls && (
+          <span className="block text-sm text-muted">
+            {[cls.code, cls.lecturerName].filter(Boolean).join(" · ")}
+          </span>
+        )}
       </p>
-      <button
-        type="button"
-        onClick={signOut}
-        className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
-      >
-        Not you?
-      </button>
+      <span className="flex gap-4">
+        {modules.length > 1 && (
+          <button
+            type="button"
+            onClick={changeModule}
+            disabled={busy}
+            className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
+          >
+            Other modules
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={signOut}
+          disabled={busy}
+          className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
+        >
+          Not you?
+        </button>
+      </span>
     </div>
   );
 

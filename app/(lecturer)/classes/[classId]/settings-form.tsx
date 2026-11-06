@@ -9,10 +9,14 @@ export function SettingsForm({
   classId,
   startDate,
   totalWeeks,
+  cohortId,
+  cohorts,
 }: {
   classId: number;
   startDate: string;
   totalWeeks: number;
+  cohortId: number | null;
+  cohorts: { id: number; name: string }[];
 }) {
   const [state, action, pending] = useActionState(
     updateClassSettings,
@@ -44,6 +48,22 @@ export function SettingsForm({
           defaultValue={totalWeeks}
           className={`${inputClass} w-24 tabular-nums`}
         />
+      </div>
+      <div>
+        <Label htmlFor="cohortId">Cohort</Label>
+        <select
+          id="cohortId"
+          name="cohortId"
+          defaultValue={cohortId ?? ""}
+          className={`${inputClass} pr-8`}
+        >
+          <option value="">None (hidden from the submit page)</option>
+          {cohorts.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
       </div>
       <Button type="submit" size="lg" className="h-11" disabled={pending}>
         {pending ? "Saving…" : "Save"}

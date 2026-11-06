@@ -1,6 +1,12 @@
 import { and, asc, count, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { classes, enrollments, sessions, students } from "@/lib/db/schema";
+import {
+  classes,
+  cohorts,
+  enrollments,
+  sessions,
+  students,
+} from "@/lib/db/schema";
 
 async function activeStudentCount(classId: number): Promise<number> {
   const row = await db
@@ -74,4 +80,13 @@ export async function getClass(lecturerId: number, classId: number) {
     .orderBy(asc(students.name))
     .all();
   return { ...row, roster };
+}
+
+// Cohorts a lecturer can put a module in; the admin manages the list.
+export async function listCohortOptions() {
+  return db
+    .select({ id: cohorts.id, name: cohorts.name })
+    .from(cohorts)
+    .orderBy(asc(cohorts.name))
+    .all();
 }
