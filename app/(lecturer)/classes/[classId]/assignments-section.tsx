@@ -2,10 +2,13 @@ import Link from "next/link";
 import { ArrowRight, Plus } from "@/components/ui/icons";
 import { Notice } from "@/components/ui/notice";
 import type { getClassAssignments } from "@/lib/data/assignments";
+import { itemStatus } from "@/lib/late-window";
 import { formatDeadline, msToLocalInput } from "@/lib/timezone";
 import { AssignmentForm } from "./assignment-form";
 import { ResyncButton } from "./assignments/[assignmentId]/controls";
 import { CopyLinkButton } from "./copy-link-button";
+
+const STATUS_TONE = { ok: "text-accent-strong", warn: "text-warn", muted: "" };
 
 const KIND_LABEL = {
   ASSIGNMENT: "Assignment",
@@ -86,12 +89,7 @@ export function AssignmentsSection({
       ) : (
         <ul className="mt-5 divide-y divide-line overflow-hidden rounded-2xl bg-surface shadow-soft ring-1 ring-line">
           {items.map((item) => {
-            const overdue = now > item.dueAt;
-            const state = !item.open
-              ? "Closed"
-              : overdue
-                ? "Deadline passed · accepting late work"
-                : "Open";
+            const state = itemStatus(item, now, timeZone);
             return (
               <li key={item.id}>
                 <Link
@@ -105,12 +103,8 @@ export function AssignmentsSection({
                       {item.groupWork && " · group work"}
                     </span>
                     <span className="block text-sm text-muted">
-                      <span
-                        className={
-                          !item.open ? "" : overdue ? "text-warn" : "text-accent-strong"
-                        }
-                      >
-                        {state}
+                      <span className={STATUS_TONE[state.tone]}>
+                        {state.text}
                       </span>{" "}
                       · due {formatDeadline(item.dueAt, timeZone)}
                     </span>
@@ -145,6 +139,8 @@ export function AssignmentsSection({
             title: "",
             kind: "ASSIGNMENT",
             dueAt: nextWeek(timeZone, now),
+            latePolicy: "UNTIL_CLOSED",
+            closesAt: "",
             instructions: "",
             groupWork: false,
             maxGroupSize: 4,

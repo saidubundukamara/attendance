@@ -208,6 +208,7 @@ export async function getClassSubmissionMatrix(db: Db, classId: number) {
       kind: assignments.kind,
       dueAt: assignments.dueAt,
       open: assignments.open,
+      closesAt: assignments.closesAt,
     })
     .from(assignments)
     .where(eq(assignments.classId, classId))

@@ -17,8 +17,8 @@ import {
   formatDeadline,
   localInputToMs,
   msToLocalInput,
-  relativeToNow,
 } from "@/lib/timezone";
+import { acceptsSubmissions, itemStatus, latePolicy } from "@/lib/late-window";
 import { AssignmentForm } from "../../assignment-form";
 import { CopyLinkButton } from "../../copy-link-button";
 import {
@@ -121,13 +121,7 @@ export default async function AssignmentPage({
         <DeadlineEditor
           assignmentId={assignment.id}
           label={`Due ${formatDeadline(assignment.dueAt, timeZone)}`}
-          status={
-            !assignment.open
-              ? { text: "Closed", tone: "muted" }
-              : now > assignment.dueAt
-                ? { text: "Deadline passed · accepting late work", tone: "warn" }
-                : { text: `Open · closes ${relativeToNow(assignment.dueAt, now)}`, tone: "ok" }
-          }
+          status={itemStatus(assignment, now, timeZone, true)}
           value={msToLocalInput(assignment.dueAt, timeZone)}
           timeZone={timeZone}
           quick={quick}
@@ -157,7 +151,10 @@ export default async function AssignmentPage({
         className="mt-6 flex flex-wrap items-center gap-3"
         style={{ "--i": 1 } as React.CSSProperties}
       >
-        <OpenToggle id={assignment.id} open={assignment.open} />
+        <OpenToggle
+          id={assignment.id}
+          open={acceptsSubmissions(assignment, now)}
+        />
         <Link
           href="?edit=1#edit"
           className="inline-flex h-8 items-center rounded-full px-3.5 text-sm font-medium ring-1 ring-line-strong ring-inset transition-colors duration-200 hover:bg-sunken"
@@ -295,11 +292,12 @@ export default async function AssignmentPage({
           <summary className="inline-flex cursor-pointer list-none items-center gap-2 text-lg font-semibold tracking-tight [&::-webkit-details-marker]:hidden">
             Edit details
             <span className="text-sm font-normal text-muted group-open:hidden">
-              title, type, deadline, group, instructions
+              title, type, deadline, late work, group, instructions
             </span>
           </summary>
           <p className="mt-1 max-w-prose text-sm text-muted">
-            Moving the deadline re-checks which submissions count as late.
+            Moving the deadline re-checks which submissions count as late,
+            and moves the late-work cutoff by the same amount.
           </p>
           <AssignmentForm
             classId={assignment.classId}
@@ -309,6 +307,11 @@ export default async function AssignmentPage({
               title: assignment.title,
               kind: assignment.kind,
               dueAt: msToLocalInput(assignment.dueAt, timeZone),
+              latePolicy: latePolicy(assignment),
+              closesAt:
+                assignment.closesAt === null
+                  ? ""
+                  : msToLocalInput(assignment.closesAt, timeZone),
               instructions: assignment.instructions ?? "",
               groupWork: assignment.groupWork,
               maxGroupSize: assignment.maxGroupSize ?? 4,

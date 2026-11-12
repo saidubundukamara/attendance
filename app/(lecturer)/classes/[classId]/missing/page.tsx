@@ -6,6 +6,7 @@ import { requireLecturer } from "@/lib/auth";
 import { getClassSubmissionMatrix, type MatrixCell } from "@/lib/data/assignments";
 import { getClass } from "@/lib/data/classes";
 import { db } from "@/lib/db";
+import { acceptsSubmissions } from "@/lib/late-window";
 import { appTimeZone, formatDeadline } from "@/lib/timezone";
 import { CopyButton } from "../copy-link-button";
 
@@ -155,7 +156,7 @@ function ByAssignment({
                 </h2>
                 <p className="text-sm text-muted">
                   Due {due} ·{" "}
-                  {!item.open ? (
+                  {!acceptsSubmissions(item, now) ? (
                     "Closed"
                   ) : overdue ? (
                     <span className="text-warn">Deadline passed</span>

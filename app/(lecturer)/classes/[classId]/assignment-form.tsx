@@ -7,11 +7,23 @@ import {
   createAssignment,
   updateAssignment,
 } from "@/lib/actions/assignments";
+import type { LatePolicy } from "@/lib/late-window";
+
+const LATE_HINT: Record<LatePolicy, string> = {
+  UNTIL_CLOSED:
+    "Work after the deadline is taken and marked LATE until you close the item.",
+  NONE: "The item closes at the deadline. Nothing is taken after it.",
+  UNTIL:
+    "Work after the deadline is marked LATE. The item closes by itself at this time.",
+};
 
 type Values = {
   title: string;
   kind: "ASSIGNMENT" | "CLASSWORK" | "PROJECT";
   dueAt: string;
+  latePolicy: LatePolicy;
+  // datetime-local value; only used with "UNTIL".
+  closesAt: string;
   instructions: string;
   groupWork: boolean;
   maxGroupSize: number;
@@ -39,6 +51,7 @@ export function AssignmentForm({
   );
   const form = useRef<HTMLFormElement>(null);
   const [groupWork, setGroupWork] = useState(values.groupWork);
+  const [policy, setPolicy] = useState<LatePolicy>(values.latePolicy);
   // On a new item the box follows the type (Projects are group work) until
   // the lecturer ticks or unticks it themselves.
   const [groupTouched, setGroupTouched] = useState(editing);
@@ -102,6 +115,45 @@ export function AssignmentForm({
           className={`${inputClass} w-full`}
         />
       </div>
+      <div>
+        <Label htmlFor={`${prefix}-latePolicy`}>Late submissions</Label>
+        <select
+          id={`${prefix}-latePolicy`}
+          name="latePolicy"
+          value={policy}
+          onChange={(event) => setPolicy(event.target.value as LatePolicy)}
+          aria-describedby={`${prefix}-late-hint`}
+          className={`${inputClass} w-full`}
+        >
+          <option value="UNTIL_CLOSED">Accept until I close it</option>
+          <option value="UNTIL">Accept until a set time</option>
+          <option value="NONE">Don&rsquo;t accept late work</option>
+        </select>
+      </div>
+      {policy === "UNTIL" ? (
+        <div>
+          <Label htmlFor={`${prefix}-closesAt`}>
+            Stop accepting at ({timeZone})
+          </Label>
+          <input
+            id={`${prefix}-closesAt`}
+            name="closesAt"
+            type="datetime-local"
+            required
+            defaultValue={values.closesAt}
+            aria-describedby={`${prefix}-late-hint`}
+            className={`${inputClass} w-full`}
+          />
+        </div>
+      ) : (
+        <div className="hidden sm:block" />
+      )}
+      <p
+        id={`${prefix}-late-hint`}
+        className="-mt-2 text-xs text-muted sm:col-span-2"
+      >
+        {LATE_HINT[policy]}
+      </p>
       <fieldset className="sm:col-span-2" disabled={groupLocked}>
         <legend className="sr-only">Group work</legend>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3">

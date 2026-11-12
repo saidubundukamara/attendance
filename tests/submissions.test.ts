@@ -222,6 +222,30 @@ describe("startSubmission and completeSubmission", () => {
     );
   });
 
+  it("takes late work until the cutoff, then refuses it", async () => {
+    await db.update(assignments).set({ closesAt: NOW + 2 * DAY }).run();
+    expect((await start({}, NOW + 2 * DAY)).code).toBe("OK");
+    expect((await start({}, NOW + 2 * DAY + 1)).code).toBe("CLOSED");
+  });
+
+  it("refuses all late work when the cutoff is the deadline", async () => {
+    await db.update(assignments).set({ closesAt: NOW + DAY }).run();
+    expect((await start({}, NOW + DAY)).code).toBe("OK");
+    expect((await start({}, NOW + DAY + 1)).code).toBe("CLOSED");
+  });
+
+  it("shows students an item past its cutoff as closed", async () => {
+    await db.update(assignments).set({ closesAt: NOW + 2 * DAY }).run();
+    const look = (now: number) =>
+      lookupStudent(db, { classId, studentIdRaw: "1111", ip }, now);
+    expect(await look(NOW + DAY + 1)).toMatchObject({
+      items: [{ open: true, closedByCutoff: false, closesAt: NOW + 2 * DAY }],
+    });
+    expect(await look(NOW + 3 * DAY)).toMatchObject({
+      items: [{ open: false, closedByCutoff: true }],
+    });
+  });
+
   it("refuses bad files before contacting Drive", async () => {
     const result = await start({ files: [{ name: "virus.exe", size: 5, type: "" }] });
     expect(result).toMatchObject({ code: "BAD_FILE" });

@@ -1,0 +1,1 @@
+ALTER TABLE `assignments` ADD `closes_at` integer;

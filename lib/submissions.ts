@@ -14,6 +14,7 @@ import {
   submissions,
 } from "@/lib/db/schema";
 import type { DriveIo } from "@/lib/google/drive";
+import { acceptsSubmissions, closedByCutoff } from "@/lib/late-window";
 import { isRateLimited, recordHit } from "@/lib/ratelimit";
 import { isValidStudentId, normalizeStudentId } from "@/lib/sheets/parse";
 import { expandStudentId } from "@/lib/student-id";
@@ -214,7 +215,12 @@ export type StudentItem = {
   kind: "ASSIGNMENT" | "CLASSWORK" | "PROJECT";
   instructions: string | null;
   dueAt: number;
+  // False once closed, by the lecturer or by the late-work cutoff.
   open: boolean;
+  // When late work stops being taken; null when it never stops by itself.
+  closesAt: number | null;
+  // True when the cutoff closed it, not the lecturer.
+  closedByCutoff: boolean;
   groupWork: boolean;
   maxGroupSize: number | null;
   submission: {
@@ -258,6 +264,7 @@ export async function lookupStudent(
       instructions: assignments.instructions,
       dueAt: assignments.dueAt,
       open: assignments.open,
+      closesAt: assignments.closesAt,
       groupWork: assignments.groupWork,
       maxGroupSize: assignments.maxGroupSize,
     })
@@ -335,6 +342,8 @@ export async function lookupStudent(
       const sub = done.find((d) => d.assignmentId === item.id);
       return {
         ...item,
+        open: acceptsSubmissions(item, now),
+        closedByCutoff: closedByCutoff(item, now),
         submission: sub
           ? {
               late: sub.late,
@@ -515,7 +524,7 @@ export async function startSubmission(
     )
     .get();
   if (!assignment) return { code: "NO_ASSIGNMENT" };
-  if (!assignment.open) return { code: "CLOSED" };
+  if (!acceptsSubmissions(assignment, now)) return { code: "CLOSED" };
 
   // Covers a group mate having submitted for them, too.
   if ((await alreadyCovered(db, assignment.id, [student.id])).length) {
@@ -573,6 +582,7 @@ export async function startSubmission(
       .select({
         open: assignments.open,
         dueAt: assignments.dueAt,
+        closesAt: assignments.closesAt,
         groupWork: assignments.groupWork,
         maxGroupSize: assignments.maxGroupSize,
       })
@@ -580,7 +590,7 @@ export async function startSubmission(
       .where(eq(assignments.id, assignment.id))
       .get();
     if (!fresh) return { code: "NO_ASSIGNMENT" };
-    if (!fresh.open) return { code: "CLOSED" };
+    if (!acceptsSubmissions(fresh, now)) return { code: "CLOSED" };
     if (group.length > 0 && !fresh.groupWork) {
       return { code: "BAD_GROUP", message: "This item is not group work." };
     }

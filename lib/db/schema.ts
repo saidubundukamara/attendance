@@ -183,6 +183,10 @@ export const assignments = sqliteTable(
     dueAt: integer("due_at").notNull(),
     // Closed items accept no new submissions, late or not.
     open: integer("open", { mode: "boolean" }).notNull().default(true),
+    // When late work stops being accepted and the item closes by itself.
+    // Null: late work is taken until the lecturer closes it. Equal to
+    // `dueAt`: no late work at all.
+    closesAt: integer("closes_at"),
     // Created on first use; files land in <root>/<class>/<title>/.
     driveFolderId: text("drive_folder_id"),
     // Group work: one student submits for up to `maxGroupSize` people,

@@ -16,6 +16,7 @@ import {
   rejudgeLateness,
   removeSubmission,
 } from "@/lib/submissions";
+import { shiftCutoff } from "@/lib/late-window";
 import { appTimeZone, localInputToMs } from "@/lib/timezone";
 
 export type AssignmentState =
@@ -29,6 +30,8 @@ const fieldsSchema = z.object({
     .max(100, "Keep the title under 100 characters."),
   kind: z.enum(["ASSIGNMENT", "CLASSWORK", "PROJECT"]),
   dueAt: z.string().trim().min(1, "Enter a deadline."),
+  latePolicy: z.enum(["UNTIL_CLOSED", "NONE", "UNTIL"]),
+  closesAt: z.string().trim(),
   instructions: z
     .string()
     .trim()
@@ -47,6 +50,8 @@ function readFields(formData: FormData) {
     title: formData.get("title") ?? "",
     kind: formData.get("kind") ?? "ASSIGNMENT",
     dueAt: formData.get("dueAt") ?? "",
+    latePolicy: formData.get("latePolicy") ?? "UNTIL_CLOSED",
+    closesAt: formData.get("closesAt") ?? "",
     instructions: formData.get("instructions") ?? "",
     groupWork,
     // Only checked when the item is group work.
@@ -59,6 +64,27 @@ function groupFields(data: { groupWork: boolean; maxGroupSize: number }) {
     groupWork: data.groupWork,
     maxGroupSize: data.groupWork ? data.maxGroupSize : null,
   };
+}
+
+// The deadline and the late-work cutoff, as stored.
+function readTimes(data: {
+  dueAt: string;
+  latePolicy: "UNTIL_CLOSED" | "NONE" | "UNTIL";
+  closesAt: string;
+}): { ok: true; dueAt: number; closesAt: number | null } | { ok: false; message: string } {
+  const timeZone = appTimeZone();
+  const dueAt = localInputToMs(data.dueAt, timeZone);
+  if (dueAt === null) return { ok: false, message: "Enter a valid deadline." };
+  if (data.latePolicy === "UNTIL_CLOSED") return { ok: true, dueAt, closesAt: null };
+  if (data.latePolicy === "NONE") return { ok: true, dueAt, closesAt: dueAt };
+  const closesAt = localInputToMs(data.closesAt, timeZone);
+  if (closesAt === null) {
+    return { ok: false, message: "Enter when late submissions stop." };
+  }
+  if (closesAt <= dueAt) {
+    return { ok: false, message: "Late submissions must stop after the deadline." };
+  }
+  return { ok: true, dueAt, closesAt };
 }
 
 const id = z.coerce.number().int().positive();
@@ -108,8 +134,9 @@ export async function createAssignment(
     return { ok: false, message: parsed.error.issues[0].message };
   }
   const { title, kind, instructions } = parsed.data;
-  const dueAt = localInputToMs(parsed.data.dueAt, appTimeZone());
-  if (dueAt === null) return { ok: false, message: "Enter a valid deadline." };
+  const times = readTimes(parsed.data);
+  if (!times.ok) return times;
+  const { dueAt, closesAt } = times;
 
   const cls = await db
     .select({ id: classes.id })
@@ -126,6 +153,7 @@ export async function createAssignment(
       title,
       kind,
       dueAt,
+      closesAt,
       instructions: instructions || null,
       ...groupFields(parsed.data),
       createdAt: Date.now(),
@@ -154,8 +182,9 @@ export async function updateAssignment(
     return { ok: false, message: parsed.error.issues[0].message };
   }
   const { title, kind, instructions } = parsed.data;
-  const dueAt = localInputToMs(parsed.data.dueAt, appTimeZone());
-  if (dueAt === null) return { ok: false, message: "Enter a valid deadline." };
+  const times = readTimes(parsed.data);
+  if (!times.ok) return times;
+  const { dueAt, closesAt } = times;
 
   // In one transaction, which holds the write lock: no submission can start
   // and no other save can land between these checks and the update.
@@ -180,7 +209,14 @@ export async function updateAssignment(
       : groupFields(parsed.data);
     await tx
       .update(assignments)
-      .set({ title, kind, dueAt, instructions: instructions || null, ...group })
+      .set({
+        title,
+        kind,
+        dueAt,
+        closesAt,
+        instructions: instructions || null,
+        ...group,
+      })
       .where(eq(assignments.id, current.id))
       .run();
     if (dueAt !== current.dueAt) await rejudgeLateness(tx, current.id);
@@ -225,13 +261,18 @@ export async function updateDeadline(
 
   // The update and the re-judge commit together; the re-judge reads the
   // stored deadline, so overlapping saves agree with whichever lands last.
+  // The late-work cutoff moves by the same amount as the deadline.
   const current = await db.transaction(async (tx) => {
+    const before = await tx
+      .select({ dueAt: assignments.dueAt, closesAt: assignments.closesAt })
+      .from(assignments)
+      .where(eq(assignments.id, assignmentId.data))
+      .get();
+    if (!before || before.dueAt === dueAt) return undefined;
     const row = await tx
       .update(assignments)
-      .set({ dueAt })
-      .where(
-        and(eq(assignments.id, assignmentId.data), ne(assignments.dueAt, dueAt)),
-      )
+      .set({ dueAt, closesAt: shiftCutoff(before.closesAt, before.dueAt, dueAt) })
+      .where(eq(assignments.id, assignmentId.data))
       .returning({ classId: assignments.classId })
       .get();
     if (row) await rejudgeLateness(tx, assignmentId.data);
@@ -259,9 +300,19 @@ export async function setAssignmentOpen(
   open: boolean,
 ): Promise<void> {
   await requireLecturer();
+  // Reopening an item its cutoff closed drops the cutoff; otherwise it
+  // would close again straight away. Late work is then taken until the
+  // lecturer closes it.
   const row = await db
     .update(assignments)
-    .set({ open })
+    .set(
+      open
+        ? {
+            open,
+            closesAt: sql`CASE WHEN ${assignments.closesAt} < ${Date.now()} THEN NULL ELSE ${assignments.closesAt} END`,
+          }
+        : { open },
+    )
     .where(eq(assignments.id, assignmentId))
     .returning({ classId: assignments.classId })
     .get();

@@ -22,6 +22,7 @@ import {
   MAX_FILE_BYTES,
   MAX_FILES,
 } from "@/lib/submission-files";
+import { acceptsSubmissions, closedByCutoff } from "@/lib/late-window";
 import type { LookupResult, StudentItem } from "@/lib/submissions";
 import {
   formatDeadline,
@@ -29,6 +30,19 @@ import {
   timeLeft,
   type Urgency,
 } from "@/lib/timezone";
+
+// Still taking work at `now`. The lookup judged this when it ran; the page
+// stays open, so the cutoff is checked again against the ticking clock.
+function isOpen(item: StudentItem, now: number) {
+  return acceptsSubmissions(item, now);
+}
+
+// What the student may still do once the deadline has gone.
+function lateNote(item: StudentItem, timeZone: string) {
+  return item.closesAt === null
+    ? "You can still submit, but it will be marked LATE."
+    : `You can still submit until ${formatDeadline(item.closesAt, timeZone)}, but it will be marked LATE.`;
+}
 
 type ClassOption = { id: number; code: string; moduleName: string | null };
 type Student = Extract<LookupResult, { code: "OK" }>["student"];
@@ -45,7 +59,7 @@ const MESSAGES: Record<string, string> = {
   NOT_FOUND: "That ID is not on this class's list. Check the class and the digits.",
   INVALID_ID: "Enter the last 4 digits of your student ID.",
   NO_ASSIGNMENT: "That item no longer exists. Go back and pick again.",
-  CLOSED: "Your lecturer has closed this item. It no longer accepts submissions.",
+  CLOSED: "This item has closed. It no longer accepts submissions.",
   ALREADY_SUBMITTED: "You have already submitted this item. Each item takes one submission.",
   EXPIRED: "The upload took too long and has expired. Please try again.",
   UPLOAD_FAILED: "The upload did not go through. Check your connection and try again.",
@@ -482,13 +496,14 @@ export function SubmitFlow({
             {items.map((it) => {
               const sub = it.submission;
               const overdue = now > it.dueAt;
-              const available = !sub && it.open;
+              const itOpen = isOpen(it, now);
+              const available = !sub && itOpen;
               const preview = it.instructions
                 ? richTextPreview(it.instructions)
                 : "";
               const cue = sub
                 ? "View your submission"
-                : !it.open
+                : !itOpen
                   ? preview
                     ? "Read the instructions"
                     : null
@@ -515,7 +530,7 @@ export function SubmitFlow({
                       </span>
                     </span>
                     <span id={`${ids}-meta`} className="mt-1.5 block text-sm">
-                      {sub || !it.open ? (
+                      {sub || !itOpen ? (
                         // Done or closed: the deadline stays on show, quieter.
                         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
                           <span className="font-medium text-ink/80 tabular-nums">
@@ -545,7 +560,7 @@ export function SubmitFlow({
                           <Countdown dueAt={it.dueAt} now={now} />
                           {overdue && (
                             <span className="basis-full text-danger">
-                              You can still submit, but it will be marked LATE.
+                              {lateNote(it, timeZone)}
                             </span>
                           )}
                         </span>
@@ -580,7 +595,7 @@ export function SubmitFlow({
 
   // The item, finished or closed: the brief and what was handed in, to read
   // back. Nothing can be sent from here.
-  if (!done && (item.submission || !item.open)) {
+  if (!done && (item.submission || !isOpen(item, now))) {
     return (
       <div className="animate-rise">
         {header}
@@ -673,7 +688,7 @@ export function SubmitFlow({
       >
         {item.title}
       </h2>
-      <DeadlinePanel dueAt={item.dueAt} now={now} timeZone={timeZone} />
+      <DeadlinePanel item={item} now={now} timeZone={timeZone} />
       {item.instructions && <Brief text={item.instructions} />}
       {item.groupWork && classId !== "" && (
         <GroupMembers
@@ -858,15 +873,17 @@ const PANEL_TEXT: Record<Urgency, string> = {
 // The deadline at the top of the upload step: one line, coloured by how
 // close it is, kept compact so the brief below starts on the first screen.
 function DeadlinePanel({
-  dueAt,
+  item,
   now,
   timeZone,
 }: {
-  dueAt: number;
+  item: StudentItem;
   now: number;
   timeZone: string;
 }) {
+  const { dueAt, closesAt } = item;
   const left = timeLeft(dueAt, now);
+  const noLate = closesAt !== null && closesAt <= dueAt;
   const passed = left.urgency === "passed";
   return (
     <div
@@ -886,12 +903,27 @@ function DeadlinePanel({
       </p>
       {passed ? (
         <p className="mt-1.5 text-sm">
-          You can still submit, but it will be marked <strong>LATE</strong>.
+          You can still submit
+          {closesAt !== null && ` until ${formatDeadline(closesAt, timeZone)}`},
+          but it will be marked <strong>LATE</strong>.
+        </p>
+      ) : noLate ? (
+        <p className="mt-1.5 text-sm">
+          {left.urgency === "today" && "Less than a day to go. "}
+          Late work is not accepted: submissions close at the deadline.
         </p>
       ) : left.urgency === "today" ? (
         <p className="mt-1.5 text-sm">
           Less than a day to go. Anything sent after the deadline is marked
-          LATE.
+          LATE
+          {closesAt !== null &&
+            `, and nothing is accepted after ${formatDeadline(closesAt, timeZone)}`}
+          .
+        </p>
+      ) : closesAt !== null ? (
+        <p className="mt-1.5 text-sm">
+          Late work is accepted until {formatDeadline(closesAt, timeZone)} and
+          marked LATE.
         </p>
       ) : null}
     </div>
@@ -965,7 +997,10 @@ function ItemStatus({
       )}
       {!sub && (
         <p className="mt-1.5 text-sm">
-          Your lecturer has closed this item. It no longer accepts submissions.
+          {item.closesAt !== null &&
+          (item.closedByCutoff || closedByCutoff(item, now))
+            ? `This item closed at ${formatDeadline(item.closesAt, timeZone)}. It no longer accepts submissions.`
+            : "Your lecturer has closed this item. It no longer accepts submissions."}
         </p>
       )}
       {sub && sub.files.length > 0 && (
